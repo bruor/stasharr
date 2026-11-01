@@ -1,0 +1,61 @@
+{
+  "name": "Stasharr",
+  "version": "1.0.0",
+  "description": "Intercepts Xtream Codes (XC) VOD playback requests and redirects players to Streamcache using canonical Dispatcharr playback URLs.",
+  "author": "bruor",
+  "fields": [
+    {
+      "id": "enabled",
+      "label": "Enable Stasharr Interceptor",
+      "type": "boolean",
+      "default": true,
+      "description": "Master switch to enable or disable XC VOD redirection to Streamcache."
+    },
+    {
+      "id": "streamcache_base_url",
+      "label": "Streamcache Base URL",
+      "type": "string",
+      "default": "http://streamcache:8080",
+      "description": "Base URL of Streamcache as reachable by your XC media players (e.g., http://streamcache:8080 or http://192.168.1.50:8080)."
+    },
+    {
+      "id": "dispatcharr_stream_url",
+      "label": "Dispatcharr Base URL for Streamcache",
+      "type": "string",
+      "default": "http://dispatcharr:9191",
+      "description": "Base URL of Dispatcharr as reachable by Streamcache (e.g., http://dispatcharr:9191 or http://host.docker.internal:9191)."
+    },
+    {
+      "id": "api_key",
+      "label": "Dispatcharr API Key",
+      "type": "string",
+      "default": "",
+      "description": "API key used by Streamcache to authenticate with Dispatcharr (/proxy/vod/...) on cache misses."
+    },
+    {
+      "id": "bypass_header",
+      "label": "Bypass Header Name",
+      "type": "string",
+      "default": "X-Streamcache-Bypass",
+      "description": "Optional HTTP request header that disables redirection to prevent loops."
+    }
+  ],
+  "actions": [
+    {
+      "id": "status_check",
+      "label": "Check Hook Status",
+      "description": "Verify interceptor status, active settings, and runtime method wrapping state.",
+      "button_label": "Check Status",
+      "button_variant": "filled",
+      "button_color": "blue"
+    },
+    {
+      "id": "ping_streamcache",
+      "label": "Ping Streamcache",
+      "description": "Test HTTP connectivity from Dispatcharr to the configured Streamcache URL.",
+      "button_label": "Ping Streamcache",
+      "button_variant": "outline",
+      "button_color": "green"
+    }
+  ]
+}
