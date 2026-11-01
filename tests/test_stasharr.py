@@ -21,6 +21,9 @@ class TestStasharrPlugin(unittest.TestCase):
             if hasattr(mock_vod_views, "_stasharr_orig_stream_vod"):
                 delattr(mock_vod_views, "_stasharr_orig_stream_vod")
 
+        # Clean up any mocked apps.plugins.models between tests
+        sys.modules.pop("apps.plugins.models", None)
+
         # Import plugin
         import plugin
         self.plugin_mod = plugin
@@ -33,6 +36,7 @@ class TestStasharrPlugin(unittest.TestCase):
             if hasattr(mock_vod_views, "_stasharr_orig_stream_vod"):
                 mock_vod_views.stream_vod = mock_vod_views._stasharr_orig_stream_vod
                 delattr(mock_vod_views, "_stasharr_orig_stream_vod")
+        sys.modules.pop("apps.plugins.models", None)
 
     def test_hook_injection(self):
         """Verify stream_vod is wrapped and the original is preserved."""
@@ -110,7 +114,7 @@ class TestStasharrPlugin(unittest.TestCase):
         redirect_url = self.plugin.build_streamcache_redirect_url("movie", "uuid-777")
         extracted_target = unquote(redirect_url.split("url=")[1])
 
-        # Simulate GoStreamCache's getCacheKeyAndExt logic:
+        # Simulate GoStreamCache's GetCacheKey logic:
         # cleanURL := parsed.Scheme + "://" + parsed.Host + parsed.Path
         # key := md5(cleanURL)
         parsed = urlparse(extracted_target)
@@ -185,10 +189,63 @@ class TestStasharrPlugin(unittest.TestCase):
         self.orig_stream_vod_mock.assert_called_once()
         self.assertEqual(res, "ORIGINAL_STREAM_CALLED")
 
+    def test_live_db_settings_update_not_stale_cached(self):
+        """
+        Verify that updating PluginConfig.settings in Dispatcharr's database
+        is immediately reflected on the very next request without requiring a restart.
+        """
+        vod_views = sys.modules["apps.proxy.vod_proxy.views"]
+
+        mock_config = MagicMock()
+        mock_config.enabled = True
+        mock_config.settings = {
+            "enabled": True,
+            "streamcache_base_url": "http://old-cache:8080",
+            "dispatcharr_stream_url": "http://old-dp:9191",
+            "api_key": "old-key",
+        }
+
+        mock_models = types.ModuleType("apps.plugins.models")
+        mock_plugin_config_cls = MagicMock()
+        mock_plugin_config_cls.objects.filter.return_value.first.return_value = mock_config
+        mock_models.PluginConfig = mock_plugin_config_cls
+        sys.modules["apps.plugins.models"] = mock_models
+
+        req = MagicMock()
+        req.path = "/movie/testuser/testpass/101.mp4"
+        req.headers = {}
+        req.GET = {}
+
+        resp1 = vod_views.stream_vod(req, "movie", "movie-uuid-999")
+        self.assertIn("http://old-cache:8080/stream?url=", resp1["Location"])
+
+        # Simulate user saving new settings in the Dispatcharr Web UI
+        mock_config.settings = {
+            "enabled": True,
+            "streamcache_base_url": "http://new-cache:8080",
+            "dispatcharr_stream_url": "http://new-dp:9191",
+            "api_key": "new-key",
+        }
+
+        resp2 = vod_views.stream_vod(req, "movie", "movie-uuid-999")
+        self.assertIn("http://new-cache:8080/stream?url=", resp2["Location"])
+        extracted_url = unquote(resp2["Location"].split("url=")[1])
+        self.assertEqual(extracted_url, "http://new-dp:9191/proxy/vod/movie/movie-uuid-999?api_key=new-key")
+
+    def test_plugin_stop_restores_original_stream_vod(self):
+        """Verify calling stop() unhooks stream_vod and clears ACTIVE_PLUGIN."""
+        vod_views = sys.modules["apps.proxy.vod_proxy.views"]
+        self.assertNotEqual(vod_views.stream_vod, self.orig_stream_vod_mock)
+
+        self.plugin.stop(context={"reason": "disable"})
+
+        self.assertEqual(vod_views.stream_vod, self.orig_stream_vod_mock)
+        self.assertIsNone(self.plugin_mod.ACTIVE_PLUGIN)
+
     def test_status_check_action(self):
         """Verify status_check action returns diagnostic info."""
         result = self.plugin.run("status_check", {}, {})
-        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["status"], "ok")
         self.assertTrue(result["is_hooked"])
         self.assertTrue(result["is_enabled"])
         self.assertIn("active and hooked", result["message"])

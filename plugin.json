@@ -9,6 +9,7 @@
       "label": "Enable Stasharr Interceptor",
       "type": "boolean",
       "default": true,
+      "help_text": "Master switch to enable or disable XC VOD redirection to Streamcache.",
       "description": "Master switch to enable or disable XC VOD redirection to Streamcache."
     },
     {
@@ -16,6 +17,8 @@
       "label": "Streamcache Base URL",
       "type": "string",
       "default": "http://streamcache:8080",
+      "placeholder": "http://streamcache:8080",
+      "help_text": "Base URL of Streamcache as reachable by your XC media players (e.g., http://streamcache:8080 or http://192.168.1.50:8080).",
       "description": "Base URL of Streamcache as reachable by your XC media players (e.g., http://streamcache:8080 or http://192.168.1.50:8080)."
     },
     {
@@ -23,20 +26,27 @@
       "label": "Dispatcharr Base URL for Streamcache",
       "type": "string",
       "default": "http://dispatcharr:9191",
+      "placeholder": "http://dispatcharr:9191",
+      "help_text": "Base URL of Dispatcharr as reachable by Streamcache (e.g., http://dispatcharr:9191 or http://host.docker.internal:9191).",
       "description": "Base URL of Dispatcharr as reachable by Streamcache (e.g., http://dispatcharr:9191 or http://host.docker.internal:9191)."
     },
     {
       "id": "api_key",
       "label": "Dispatcharr API Key",
       "type": "string",
+      "input_type": "password",
       "default": "",
-      "description": "API key used by Streamcache to authenticate with Dispatcharr (/proxy/vod/...) on cache misses."
+      "placeholder": "Optional API key",
+      "help_text": "Optional API key appended to the canonical Dispatcharr URL (/proxy/vod/...) when Streamcache fetches on cache misses.",
+      "description": "Optional API key appended to the canonical Dispatcharr URL (/proxy/vod/...) when Streamcache fetches on cache misses."
     },
     {
       "id": "bypass_header",
       "label": "Bypass Header Name",
       "type": "string",
       "default": "X-Streamcache-Bypass",
+      "placeholder": "X-Streamcache-Bypass",
+      "help_text": "Optional HTTP request header that disables redirection to prevent loops.",
       "description": "Optional HTTP request header that disables redirection to prevent loops."
     }
   ],
