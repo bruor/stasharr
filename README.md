@@ -76,6 +76,30 @@ Stasharr automatically renders a configuration interface in the Dispatcharr web 
 
 ---
 
+## 🔒 Security & Streamcache Hardening
+
+If your XC clients connect to Streamcache over the public internet (WAN), make sure to harden your Streamcache deployment:
+
+### 1. Restrict Upstream Hosts in Streamcache (`ALLOWED_HOSTS`)
+Streamcache fetches media from the target URL provided in the `?url=` query parameter. To prevent your instance from acting as an open proxy or SSRF vector, configure `ALLOWED_HOSTS` in your Streamcache environment to **only** allow your Dispatcharr instance:
+```bash
+ALLOWED_HOSTS="dispatcharr:9191,dp.yourdomain.ca"
+```
+Any request attempting to stream from an unapproved upstream host will immediately be rejected with `403 Forbidden Host`.
+
+### 2. Lock Down Sensitive Endpoints at the Reverse Proxy
+Streamcache serves both playback routes and internal administrative/debug endpoints on the same port. At your reverse proxy (Traefik, Nginx, Caddy, etc.), **only expose the playback endpoints to the WAN**:
+
+* **Expose to WAN**:
+  * `/stream` (and `/u/*` if base64 routes are used)
+* **Restrict to LAN / VPN only**:
+  * `/` (Web Dashboard)
+  * `/dashboard/*` (Live SSE metrics)
+  * `/api/*` (Download hydration controls)
+  * `/debug/*` (Go runtime diagnostics and pprof profiling)
+
+---
+
 ## Administrative Actions
 
 From the Stasharr plugin card in the Dispatcharr UI, two diagnostic actions are available:
