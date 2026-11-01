@@ -1,10 +1,10 @@
 # Stasharr
 
-**Stasharr** is a high-performance [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin that transparently intercepts incoming Xtream Codes (XC) Video-on-Demand (VOD) playback requests from client players (such as Tivimate, IPTV Smarters, XCIPTV, Emby, etc.) and redirects them via **HTTP 302 Found** to [GoStreamCache (Streamcache)](https://github.com/bruor/GoStreamCache).
+**Stasharr** is a high-performance [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin that transparently intercepts incoming Xtream Codes (XC) Video-on-Demand (VOD) playback requests from XC clients (such as AerioTV, IPTV Deck, Tivimate, etc.) and redirects them via **HTTP 302 Found** to [GoStreamCache (Streamcache)](https://github.com/bruor/GoStreamCache).
 
 By redirecting clients directly to Streamcache with Dispatcharr's canonical `/proxy/vod/...` playback URL, Stasharr provides:
 * **Zero Upstream Overhead on Cache Hits**: If a movie or episode is already in the cache, Dispatcharr and your upstream IPTV provider are **100% idle**.
-* **100% Shared Cache with Emby (`dp2strm`)**: Content cached by Emby via [dp2strm](https://github.com/bruor/dp2strm) produces the exact same MD5 cache key in Streamcache as streams requested through Tivimate/XC players, eliminating redundant downloads.
+* **100% Shared Cache with Emby (`dp2strm`)**: Content cached by Emby via [dp2strm](https://github.com/bruor/dp2strm) produces the exact same MD5 cache key in Streamcache as streams requested through XC clients (AerioTV, IPTV Deck, Tivimate), eliminating redundant downloads.
 * **Natural Loop Prevention**: End-user XC requests enter via `/movie/...` and `/series/...` (which Stasharr redirects), while Streamcache queries `/proxy/vod/...` on cache misses (which passes through to the provider without redirecting).
 
 ---
@@ -14,7 +14,7 @@ By redirecting clients directly to Streamcache with Dispatcharr's canonical `/pr
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Player as XC Player (Tivimate / Smarters)
+    actor Player as XC Client (AerioTV / IPTV Deck / Tivimate)
     participant Dispatcharr as Dispatcharr (+ Stasharr Plugin)
     participant Streamcache as Streamcache (GoStreamCache)
     participant Provider as Upstream IPTV Provider
