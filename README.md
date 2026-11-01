@@ -1,6 +1,6 @@
 # Stasharr
 
-**Stasharr** is a high-performance [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin that transparently intercepts incoming Xtream Codes (XC) Video-on-Demand (VOD) playback requests from XC clients (such as AerioTV, IPTV Deck, Tivimate, etc.) and redirects them via **HTTP 302 Found** to [GoStreamCache (Streamcache)](https://github.com/bruor/GoStreamCache).
+**Stasharr** is a high-performance [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin that transparently intercepts incoming Xtream Codes (XC) Video-on-Demand (VOD) playback requests from XC clients (such as AerioTV, IPTV Deck, Tivimate, etc.) and redirects them via **HTTP 302 Found** to [Streamcache](https://github.com/bruor/streamcache).
 
 By redirecting clients directly to Streamcache with Dispatcharr's canonical `/proxy/vod/...` playback URL, Stasharr provides:
 * **Zero Upstream Overhead on Cache Hits**: If a movie or episode is already in the cache, Dispatcharr and your upstream IPTV provider are **100% idle**.
@@ -16,7 +16,7 @@ sequenceDiagram
     autonumber
     actor Player as XC Client (AerioTV / IPTV Deck / Tivimate)
     participant Dispatcharr as Dispatcharr (+ Stasharr Plugin)
-    participant Streamcache as Streamcache (GoStreamCache)
+    participant Streamcache as Streamcache
     participant Provider as Upstream IPTV Provider
 
     Note over Player,Dispatcharr: Step 1: Interception & 302 Redirection
@@ -86,7 +86,7 @@ From the Stasharr plugin card in the Dispatcharr UI, two diagnostic actions are 
 
 ## Running Automated Tests
 
-Stasharr includes a standalone unit test suite that verifies hook injection, URL formatting, cache key compatibility with GoStreamCache, loop avoidance, and fallback error handling:
+Stasharr includes a standalone unit test suite that verifies hook injection, URL formatting, cache key compatibility with Streamcache, loop avoidance, and fallback error handling:
 
 ```bash
 python3 -m unittest discover -s tests -v

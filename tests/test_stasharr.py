@@ -110,7 +110,7 @@ class TestStasharrPlugin(unittest.TestCase):
         redirect_url = self.plugin.build_streamcache_redirect_url("movie", "uuid-777")
         extracted_target = unquote(redirect_url.split("url=")[1])
 
-        # Simulate GoStreamCache's getCacheKeyAndExt logic:
+        # Simulate Streamcache's getCacheKeyAndExt logic:
         # cleanURL := parsed.Scheme + "://" + parsed.Host + parsed.Path
         # key := md5(cleanURL)
         parsed_stasharr = urlparse(extracted_target)

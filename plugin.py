@@ -239,7 +239,7 @@ class Plugin:
         """
         Constructs the Streamcache redirect URL:
         http://{streamcache_base}/stream?url={encoded_dispatcharr_url}
-        matching the exact MD5 cache key format expected by dp2strm and GoStreamCache.
+        matching the exact MD5 cache key format expected by dp2strm and Streamcache.
         """
         sc_base = str(
             self.get_setting("streamcache_base_url", "http://streamcache:8080")
