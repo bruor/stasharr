@@ -15,7 +15,6 @@ DEFAULT_SETTINGS = {
     "enabled": True,
     "streamcache_base_url": "http://streamcache:8080",
     "dispatcharr_stream_url": "http://dispatcharr:9191",
-    "bypass_header": "X-Streamcache-Bypass",
 }
 
 try:
@@ -60,27 +59,18 @@ class Plugin:
             "label": "Streamcache Base URL",
             "type": "string",
             "default": "http://streamcache:8080",
-            "placeholder": "http://streamcache:8080",
-            "help_text": "Base URL of Streamcache as reachable by your XC media players (e.g., https://streamcache.domain.ca or http://192.168.1.50:8080).",
-            "description": "Base URL of Streamcache as reachable by your XC media players (e.g., https://streamcache.domain.ca or http://192.168.1.50:8080).",
+            "placeholder": "https://streamcache.yourdomain.ca",
+            "help_text": "The publicly accessible Streamcache endpoint that XC clients will be redirected to (e.g., https://streamcache.yourdomain.ca).",
+            "description": "The publicly accessible Streamcache endpoint that XC clients will be redirected to (e.g., https://streamcache.yourdomain.ca).",
         },
         {
             "id": "dispatcharr_stream_url",
-            "label": "Dispatcharr Base URL for Streamcache",
+            "label": "Dispatcharr Base URL",
             "type": "string",
             "default": "http://dispatcharr:9191",
-            "placeholder": "http://dispatcharr:9191",
-            "help_text": "Base URL of Dispatcharr as reachable by Streamcache (must match DISPATCHARR_STREAM_URL in dp2strm for shared MD5 cache keys).",
-            "description": "Base URL of Dispatcharr as reachable by Streamcache (must match DISPATCHARR_STREAM_URL in dp2strm for shared MD5 cache keys).",
-        },
-        {
-            "id": "bypass_header",
-            "label": "Bypass Header Name",
-            "type": "string",
-            "default": "X-Streamcache-Bypass",
-            "placeholder": "X-Streamcache-Bypass",
-            "help_text": "Optional HTTP request header that disables redirection to prevent loops.",
-            "description": "Optional HTTP request header that disables redirection to prevent loops.",
+            "placeholder": "https://dispatcharr.yourdomain.ca",
+            "help_text": "The canonical Dispatcharr base URL passed inside the target ?url= parameter that Streamcache uses to fetch media via /proxy/vod/... on cache misses. Setting this explicitly to match dp2strm ensures all requests use identical pathing and produce identical MD5 cache keys regardless of how a client connected.",
+            "description": "The canonical Dispatcharr base URL passed inside the target ?url= parameter that Streamcache uses to fetch media via /proxy/vod/... on cache misses. Setting this explicitly to match dp2strm ensures all requests use identical pathing and produce identical MD5 cache keys regardless of how a client connected.",
         },
     ]
 
@@ -180,27 +170,6 @@ class Plugin:
             if not is_xc_route:
                 return orig_stream_vod(request, content_type, content_id, *args, **kwargs)
 
-            # Check for bypass header or bypass query parameter (loop safety)
-            bypass_header_name = str(
-                ACTIVE_PLUGIN.get_setting("bypass_header", "X-Streamcache-Bypass")
-                or "X-Streamcache-Bypass"
-            ).strip()
-            has_bypass_header = False
-            if bypass_header_name:
-                if hasattr(request, "headers"):
-                    has_bypass_header = bool(request.headers.get(bypass_header_name))
-                elif hasattr(request, "META"):
-                    django_meta_key = f"HTTP_{bypass_header_name.upper().replace('-', '_')}"
-                    has_bypass_header = bool(request.META.get(django_meta_key))
-
-            has_bypass_param = False
-            if hasattr(request, "GET"):
-                has_bypass_param = bool(request.GET.get("bypass") or request.GET.get("bypass_cache"))
-
-            if has_bypass_header or has_bypass_param:
-                logger.info(f"[Stasharr] Bypass flag detected for {req_path}. Falling through to upstream fetch.")
-                return orig_stream_vod(request, content_type, content_id, *args, **kwargs)
-
             # Build Streamcache redirect URL with canonical /proxy/vod/... path
             try:
                 redirect_url = ACTIVE_PLUGIN.build_streamcache_redirect_url(content_type, str(content_id))
@@ -272,10 +241,16 @@ class Plugin:
         http://{streamcache_base}/stream?url={encoded_dispatcharr_url}
         matching the exact MD5 cache key format expected by dp2strm and GoStreamCache.
         """
-        sc_base = str(self.get_setting("streamcache_base_url", "http://streamcache:8080") or "http://streamcache:8080").strip().rstrip("/")
-        dp_base = str(self.get_setting("dispatcharr_stream_url", "http://dispatcharr:9191") or "http://dispatcharr:9191").strip().rstrip("/")
+        sc_base = str(
+            self.get_setting("streamcache_base_url", "http://streamcache:8080")
+            or "http://streamcache:8080"
+        ).strip().rstrip("/")
+        dp_base = str(
+            self.get_setting("dispatcharr_stream_url", "http://dispatcharr:9191")
+            or "http://dispatcharr:9191"
+        ).strip().rstrip("/")
 
-        # Build canonical internal Dispatcharr target URL
+        # Build canonical Dispatcharr target URL
         target_url = f"{dp_base}/proxy/vod/{content_type}/{content_uuid}"
 
         # URL-encode the target for Streamcache's ?url= query parameter
@@ -313,7 +288,10 @@ class Plugin:
             }
 
         if action == "ping_streamcache":
-            sc_base = str(self.get_setting("streamcache_base_url", "http://streamcache:8080") or "http://streamcache:8080").strip().rstrip("/")
+            sc_base = str(
+                self.get_setting("streamcache_base_url", "http://streamcache:8080")
+                or "http://streamcache:8080"
+            ).strip().rstrip("/")
             ping_url = f"{sc_base}/"
             try:
                 req = urllib.request.Request(ping_url, method="GET")

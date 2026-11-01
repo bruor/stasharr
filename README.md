@@ -70,10 +70,9 @@ Stasharr automatically renders a configuration interface in the Dispatcharr web 
 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| **Enable Stasharr Interceptor** | `boolean` | `true` | Master toggle to enable or disable XC VOD redirection. Disabling immediately restores standard Dispatcharr playback without container restarts. |
-| **Streamcache Base URL** | `string` | `http://streamcache:8080` | The address where Streamcache is reachable by client media players (e.g. `https://streamcache.domain.ca` or `http://192.168.1.50:8080`). |
-| **Dispatcharr Base URL for Streamcache** | `string` | `http://dispatcharr:9191` | The address of Dispatcharr as reachable by Streamcache (e.g. `http://dispatcharr:9191` or `https://dp.domain.ca`). Must match `DISPATCHARR_STREAM_URL` in `dp2strm` for shared MD5 cache keys. |
-| **Bypass Header Name** | `string` | `X-Streamcache-Bypass` | HTTP request header that disables redirection if present (secondary loop safety mechanism). |
+| **Enable Stasharr Interceptor** | `boolean` | `true` | Master switch to enable or disable XC VOD redirection to Streamcache. Disabling immediately restores standard Dispatcharr playback without container restarts. |
+| **Streamcache Base URL** | `string` | `http://streamcache:8080` | The publicly accessible Streamcache endpoint that XC clients will be redirected to (e.g., `https://streamcache.yourdomain.ca`). |
+| **Dispatcharr Base URL** | `string` | `http://dispatcharr:9191` | The canonical Dispatcharr base URL passed inside the target `?url=` parameter that Streamcache uses to fetch media via `/proxy/vod/...` on cache misses. Setting this explicitly to match `dp2strm` ensures all requests use identical pathing and produce identical MD5 cache keys regardless of how a client connected. |
 
 ---
 
