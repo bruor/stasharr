@@ -1,0 +1,35 @@
+name: Release Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Package Stasharr zip
+        run: |
+          mkdir -p build/stasharr
+          cp plugin.json plugin.py README.md build/stasharr/
+          cd build && zip -r ../stasharr.zip stasharr/
+          cd ..
+          sha256sum stasharr.zip > stasharr.zip.sha256
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            stasharr.zip
+            stasharr.zip.sha256
+          generate_release_notes: true
