@@ -18,8 +18,8 @@
       "type": "string",
       "default": "http://streamcache:8080",
       "placeholder": "http://streamcache:8080",
-      "help_text": "Base URL of Streamcache as reachable by your XC media players (e.g., http://streamcache:8080 or http://192.168.1.50:8080).",
-      "description": "Base URL of Streamcache as reachable by your XC media players (e.g., http://streamcache:8080 or http://192.168.1.50:8080)."
+      "help_text": "Base URL of Streamcache as reachable by your XC media players (e.g., https://streamcache.domain.ca or http://192.168.1.50:8080).",
+      "description": "Base URL of Streamcache as reachable by your XC media players (e.g., https://streamcache.domain.ca or http://192.168.1.50:8080)."
     },
     {
       "id": "dispatcharr_stream_url",
@@ -27,18 +27,8 @@
       "type": "string",
       "default": "http://dispatcharr:9191",
       "placeholder": "http://dispatcharr:9191",
-      "help_text": "Base URL of Dispatcharr as reachable by Streamcache (e.g., http://dispatcharr:9191 or http://host.docker.internal:9191).",
-      "description": "Base URL of Dispatcharr as reachable by Streamcache (e.g., http://dispatcharr:9191 or http://host.docker.internal:9191)."
-    },
-    {
-      "id": "api_key",
-      "label": "Dispatcharr API Key",
-      "type": "string",
-      "input_type": "password",
-      "default": "",
-      "placeholder": "Optional API key",
-      "help_text": "Optional API key appended to the canonical Dispatcharr URL (/proxy/vod/...) when Streamcache fetches on cache misses.",
-      "description": "Optional API key appended to the canonical Dispatcharr URL (/proxy/vod/...) when Streamcache fetches on cache misses."
+      "help_text": "Base URL of Dispatcharr as reachable by Streamcache (must match DISPATCHARR_STREAM_URL in dp2strm for shared MD5 cache keys).",
+      "description": "Base URL of Dispatcharr as reachable by Streamcache (must match DISPATCHARR_STREAM_URL in dp2strm for shared MD5 cache keys)."
     },
     {
       "id": "bypass_header",

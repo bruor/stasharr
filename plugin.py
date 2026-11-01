@@ -15,7 +15,6 @@ DEFAULT_SETTINGS = {
     "enabled": True,
     "streamcache_base_url": "http://streamcache:8080",
     "dispatcharr_stream_url": "http://dispatcharr:9191",
-    "api_key": "",
     "bypass_header": "X-Streamcache-Bypass",
 }
 
@@ -62,8 +61,8 @@ class Plugin:
             "type": "string",
             "default": "http://streamcache:8080",
             "placeholder": "http://streamcache:8080",
-            "help_text": "Base URL of Streamcache as reachable by your XC media players (e.g., http://streamcache:8080 or http://192.168.1.50:8080).",
-            "description": "Base URL of Streamcache as reachable by your XC media players (e.g., http://streamcache:8080 or http://192.168.1.50:8080).",
+            "help_text": "Base URL of Streamcache as reachable by your XC media players (e.g., https://streamcache.domain.ca or http://192.168.1.50:8080).",
+            "description": "Base URL of Streamcache as reachable by your XC media players (e.g., https://streamcache.domain.ca or http://192.168.1.50:8080).",
         },
         {
             "id": "dispatcharr_stream_url",
@@ -71,18 +70,8 @@ class Plugin:
             "type": "string",
             "default": "http://dispatcharr:9191",
             "placeholder": "http://dispatcharr:9191",
-            "help_text": "Base URL of Dispatcharr as reachable by Streamcache (e.g., http://dispatcharr:9191 or http://host.docker.internal:9191).",
-            "description": "Base URL of Dispatcharr as reachable by Streamcache (e.g., http://dispatcharr:9191 or http://host.docker.internal:9191).",
-        },
-        {
-            "id": "api_key",
-            "label": "Dispatcharr API Key",
-            "type": "string",
-            "input_type": "password",
-            "default": "",
-            "placeholder": "Optional API key",
-            "help_text": "Optional API key appended to the canonical Dispatcharr URL (/proxy/vod/...) when Streamcache fetches on cache misses.",
-            "description": "Optional API key appended to the canonical Dispatcharr URL (/proxy/vod/...) when Streamcache fetches on cache misses.",
+            "help_text": "Base URL of Dispatcharr as reachable by Streamcache (must match DISPATCHARR_STREAM_URL in dp2strm for shared MD5 cache keys).",
+            "description": "Base URL of Dispatcharr as reachable by Streamcache (must match DISPATCHARR_STREAM_URL in dp2strm for shared MD5 cache keys).",
         },
         {
             "id": "bypass_header",
@@ -134,8 +123,8 @@ class Plugin:
     def _get_plugin_config(self):
         """
         Look up the persisted PluginConfig row from Dispatcharr's database.
-        Matches by module key (if loaded as `plugins.<key>`), `key='stasharr'`,
-        or `name='Stasharr'`.
+        Matches by module key (if loaded as `_dispatcharr_plugin_<key>.plugin` or `plugins.<key>`),
+        `key='stasharr'`, or `name='Stasharr'`.
         """
         try:
             from apps.plugins.models import PluginConfig
@@ -285,12 +274,9 @@ class Plugin:
         """
         sc_base = str(self.get_setting("streamcache_base_url", "http://streamcache:8080") or "http://streamcache:8080").strip().rstrip("/")
         dp_base = str(self.get_setting("dispatcharr_stream_url", "http://dispatcharr:9191") or "http://dispatcharr:9191").strip().rstrip("/")
-        api_key = str(self.get_setting("api_key", "") or "").strip()
 
         # Build canonical internal Dispatcharr target URL
         target_url = f"{dp_base}/proxy/vod/{content_type}/{content_uuid}"
-        if api_key:
-            target_url += f"?api_key={api_key}"
 
         # URL-encode the target for Streamcache's ?url= query parameter
         escaped_target = quote(target_url, safe="")

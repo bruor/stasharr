@@ -22,7 +22,7 @@ sequenceDiagram
     Note over Player,Dispatcharr: Step 1: Interception & 302 Redirection
     Player->>Dispatcharr: GET /movie/{user}/{pass}/{stream_id}.mp4
     Note over Dispatcharr: Stasharr intercepts stream_vod -> issues 302 Redirect
-    Dispatcharr-->>Player: HTTP 302 Found -> http://streamcache:8080/stream?url=http%3A%2F%2Fdispatcharr%3A9191%2Fproxy%2Fvod%2Fmovie%2F{uuid}%3Fapi_key%3D{key}
+    Dispatcharr-->>Player: HTTP 302 Found -> http://streamcache:8080/stream?url=http%3A%2F%2Fdispatcharr%3A9191%2Fproxy%2Fvod%2Fmovie%2F{uuid}
 
     Note over Player,Streamcache: Step 2: Streamcache Resolution
     Player->>Streamcache: GET /stream?url=...
@@ -32,7 +32,7 @@ sequenceDiagram
         Streamcache-->>Player: 200 OK / 206 Partial Content (Direct from disk)
         Note over Streamcache,Provider: Zero provider connections consumed!
     else Cache Miss
-        Streamcache->>Dispatcharr: GET /proxy/vod/movie/{uuid}?api_key={key}
+        Streamcache->>Dispatcharr: GET /proxy/vod/movie/{uuid}
         Note over Dispatcharr: Path is /proxy/vod/ -> NOT redirected -> streams from provider
         Dispatcharr->>Provider: Request stream
         Provider-->>Dispatcharr: Stream chunks
@@ -71,9 +71,8 @@ Stasharr automatically renders a configuration interface in the Dispatcharr web 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | **Enable Stasharr Interceptor** | `boolean` | `true` | Master toggle to enable or disable XC VOD redirection. Disabling immediately restores standard Dispatcharr playback without container restarts. |
-| **Streamcache Base URL** | `string` | `http://streamcache:8080` | The address where Streamcache is reachable by client media players (e.g. `http://192.168.1.50:8080`). |
-| **Dispatcharr Base URL for Streamcache** | `string` | `http://dispatcharr:9191` | The address of Dispatcharr as reachable by Streamcache (e.g. `http://dispatcharr:9191` or `https://dp.domain.ca`). Matches `STREAMCACHE_DISPATCHARR_URL` from `dp2strm`. |
-| **Dispatcharr API Key** | `string` | `""` | API key used by Streamcache to authenticate with Dispatcharr (`/proxy/vod/...`) on cache misses. |
+| **Streamcache Base URL** | `string` | `http://streamcache:8080` | The address where Streamcache is reachable by client media players (e.g. `https://streamcache.domain.ca` or `http://192.168.1.50:8080`). |
+| **Dispatcharr Base URL for Streamcache** | `string` | `http://dispatcharr:9191` | The address of Dispatcharr as reachable by Streamcache (e.g. `http://dispatcharr:9191` or `https://dp.domain.ca`). Must match `DISPATCHARR_STREAM_URL` in `dp2strm` for shared MD5 cache keys. |
 | **Bypass Header Name** | `string` | `X-Streamcache-Bypass` | HTTP request header that disables redirection if present (secondary loop safety mechanism). |
 
 ---
