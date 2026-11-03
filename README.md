@@ -45,7 +45,6 @@ sequenceDiagram
 
 ## Installation
 
-### Option A: Direct Folder Copy (Docker Compose)
 1. Copy the `stasharr` directory into your Dispatcharr container's plugins directory (default: `/app/data/plugins/stasharr/`):
    ```bash
    cp -r /path/to/stasharr /your/docker/volumes/dispatcharr_data/plugins/stasharr
@@ -53,14 +52,6 @@ sequenceDiagram
 2. In the Dispatcharr Web UI, navigate to **Plugins**.
 3. Click the **Reload** (refresh) icon to scan the plugin folder.
 4. Toggle **Stasharr** to **Enabled**.
-
-### Option B: Zip Upload via Dispatcharr Web UI
-1. Create a release zip:
-   ```bash
-   zip -r stasharr.zip plugin.json plugin.py README.md
-   ```
-2. In Dispatcharr Web UI, go to **Plugins** -> **Import Plugin**.
-3. Upload `stasharr.zip` and enable the plugin.
 
 ---
 
