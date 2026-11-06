@@ -13,6 +13,25 @@
       "description": "Master switch to enable or disable XC VOD redirection to Streamcache."
     },
     {
+      "id": "delivery_mode",
+      "type": "select",
+      "label": "Delivery Mode",
+      "description": "Choose delivery mode: 'Proxy' (Default) in-line streams through Dispatcharr with native stream termination and zero Nginx buffering; 'Redirect' offloads to Streamcache with HTTP 429 gate rejection.",
+      "help_text": "In Proxy mode, Dispatcharr manages the connection, supporting native 'Terminate on Limit Exceeded' to kill victim streams. In Redirect mode, streams are offloaded to Streamcache; Dispatcharr cannot terminate external connections, so limit enforcement acts as an admission gate that rejects new streams with HTTP 429.",
+      "default": "proxy",
+      "options": [
+        { "label": "Proxy (Default - Native Connection Limits, Stream Termination & Zero Nginx Buffering)", "value": "proxy" },
+        { "label": "Redirect (Direct Streamcache Offload & HTTP 429 Abuse Gate)", "value": "redirect" }
+      ]
+    },
+    {
+      "id": "streamcache_session_timeout",
+      "type": "integer",
+      "label": "Streamcache Idle Lease (seconds)",
+      "description": "Only used in Redirect Mode. Duration an idle VOD session remains reserved in Streamcache during buffer pauses.",
+      "default": 120
+    },
+    {
       "id": "streamcache_base_url",
       "label": "Streamcache Base URL",
       "type": "string",
