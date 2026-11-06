@@ -144,7 +144,7 @@ def _extract_req_header(req, header_name: str, meta_name: str):
 
 class Plugin:
     name = "Stasharr"
-    version = "1.0.0"
+    version = "1.1.0"
     description = "Intercepts Xtream Codes (XC) VOD playback requests and redirects players to Streamcache using canonical Dispatcharr playback URLs."
     author = "bruor"
 
