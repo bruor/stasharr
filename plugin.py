@@ -17,7 +17,6 @@ ACTIVE_PLUGIN = None
 DEFAULT_SETTINGS = {
     "enabled": True,
     "delivery_mode": "proxy",
-    "streamcache_session_timeout": 120,
     "streamcache_base_url": "http://streamcache:8080",
     "dispatcharr_stream_url": "http://dispatcharr:9191",
     "prehydrate_count": 1,
@@ -387,15 +386,6 @@ class Plugin:
                     "value": "redirect",
                 },
             ],
-        },
-        {
-            "id": "streamcache_session_timeout",
-            "type": "number",
-            "label": "Streamcache Idle Lease (seconds)",
-            "description": "Only used in Redirect Mode. Duration an idle VOD session remains reserved in Streamcache during buffer pauses.",
-            "default": 120,
-            "min": 1,
-            "step": 1,
         },
         {
             "id": "streamcache_base_url",

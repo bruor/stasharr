@@ -69,11 +69,9 @@ class TestStasharrPlugin(unittest.TestCase):
         self.assertNotEqual(proxy_utils.get_user_active_connections, self.orig_get_user_active_conns_mock)
 
     def test_delivery_mode_default_is_proxy(self):
-        """Verify delivery_mode default setting is 'proxy' and timeout is 120."""
+        """Verify delivery_mode default setting is 'proxy'."""
         self.assertEqual(self.plugin_mod.DEFAULT_SETTINGS["delivery_mode"], "proxy")
-        self.assertEqual(self.plugin_mod.DEFAULT_SETTINGS["streamcache_session_timeout"], 120)
         self.assertEqual(self.plugin.get_setting("delivery_mode"), "proxy")
-        self.assertEqual(self.plugin.get_setting("streamcache_session_timeout"), 120)
 
     def test_xc_movie_redirection(self):
         """Verify XC movie requests are intercepted and redirected to Streamcache in redirect mode."""

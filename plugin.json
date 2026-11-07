@@ -25,15 +25,6 @@
       ]
     },
     {
-      "id": "streamcache_session_timeout",
-      "type": "number",
-      "label": "Streamcache Idle Lease (seconds)",
-      "description": "Only used in Redirect Mode. Duration an idle VOD session remains reserved in Streamcache during buffer pauses.",
-      "default": 120,
-      "min": 1,
-      "step": 1
-    },
-    {
       "id": "streamcache_base_url",
       "label": "Streamcache Base URL",
       "type": "string",
