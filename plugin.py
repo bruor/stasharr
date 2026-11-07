@@ -192,6 +192,7 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
         logger.warning(f"[Stasharr] Failed to import Dispatcharr models for provider capacity: {e}")
         result["status"] = "unavailable"
         result["error"] = str(e)
+        result["message"] = f"Provider capacity unavailable: {e}"
         return result
 
     try:
@@ -277,6 +278,19 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
         result["target_available_streams"] = total_available
         result["providers"] = provider_list
 
+        prov_summary = ", ".join(
+            f"{p['account_name']}: {p['available_streams']}/{p['max_streams'] if p['max_streams'] != 999 else '∞'} free"
+            for p in provider_list
+        ) if provider_list else "No active M3U providers"
+
+        max_display = "∞" if total_max >= 999 else str(total_max)
+        avail_display = "∞" if total_available >= 999 else str(total_available)
+
+        result["message"] = (
+            f"Provider Capacity: {avail_display}/{max_display} streams available "
+            f"({total_active} active). {prov_summary}."
+        )
+
         # If content_type and content_id are supplied, resolve candidate accounts for this item
         if content_type and content_id:
             try:
@@ -300,6 +314,7 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
         logger.error(f"[Stasharr] Error computing provider capacity: {e}", exc_info=True)
         result["status"] = "error"
         result["error"] = str(e)
+        result["message"] = f"Error computing provider capacity: {e}"
 
     return result
 
