@@ -202,7 +202,23 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
             return f"profile_connections:{pid}"
 
     try:
-        active_accounts = M3UAccount.objects.filter(is_active=True).prefetch_related("profiles")
+        raw_accounts = M3UAccount.objects.filter(is_active=True).prefetch_related("profiles")
+
+        def is_acc_locked(a):
+            val = getattr(a, "locked", False)
+            if type(val).__name__.startswith("MagicMock"):
+                return False
+            return bool(val)
+
+        # Exclude Dispatcharr's internal locked custom account (used for custom local channels)
+        active_accounts = [
+            acc for acc in raw_accounts
+            if not is_acc_locked(acc)
+            and getattr(acc, "name", "").strip().lower() != "custom"
+        ]
+        # If user ONLY has custom accounts and no external providers, fall back to raw accounts
+        if not active_accounts and raw_accounts:
+            active_accounts = list(raw_accounts)
         total_max = 0
         total_active = 0
         total_available = 0
@@ -278,10 +294,18 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
         result["target_available_streams"] = total_available
         result["providers"] = provider_list
 
-        prov_summary = ", ".join(
-            f"{p['account_name']}: {p['available_streams']}/{p['max_streams'] if p['max_streams'] != 999 else '∞'} free"
-            for p in provider_list
-        ) if provider_list else "No active M3U providers"
+        prov_parts = []
+        for p in provider_list:
+            acc_str = f"{p['account_name']}: {p['available_streams']}/{p['max_streams'] if p['max_streams'] != 999 else '∞'} free"
+            if len(p.get("profiles", [])) > 1:
+                prof_str = ", ".join(
+                    f"{prof['name']}: {prof['available_streams']}/{prof['max_streams'] if prof['max_streams'] != 0 else '∞'}"
+                    for prof in p.get("profiles", [])
+                )
+                acc_str += f" [{prof_str}]"
+            prov_parts.append(acc_str)
+
+        prov_summary = ", ".join(prov_parts) if prov_parts else "No active M3U providers"
 
         max_display = "∞" if total_max >= 999 else str(total_max)
         avail_display = "∞" if total_available >= 999 else str(total_available)

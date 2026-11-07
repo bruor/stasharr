@@ -744,6 +744,7 @@ class TestStasharrPlugin(unittest.TestCase):
         acc1 = MagicMock()
         acc1.id = 1
         acc1.name = "Provider A"
+        acc1.locked = False
         acc1.is_active = True
 
         prof1 = MagicMock()
@@ -757,6 +758,7 @@ class TestStasharrPlugin(unittest.TestCase):
         acc2 = MagicMock()
         acc2.id = 2
         acc2.name = "Provider B (Unlimited)"
+        acc2.locked = False
         acc2.is_active = True
 
         prof2 = MagicMock()
@@ -767,7 +769,11 @@ class TestStasharrPlugin(unittest.TestCase):
 
         acc2.profiles.filter.return_value = [prof2]
 
-        mock_account_cls.objects.filter.return_value.prefetch_related.return_value = [acc1, acc2]
+        acc_custom = MagicMock()
+        acc_custom.id = 99
+        acc_custom.name = "custom"
+        acc_custom.locked = True
+        mock_account_cls.objects.filter.return_value.prefetch_related.return_value = [acc1, acc2, acc_custom]
 
         mock_redis_client = MagicMock()
         # Profile 1 has 1 active stream in Redis
@@ -818,14 +824,20 @@ class TestStasharrPlugin(unittest.TestCase):
         acc1 = MagicMock()
         acc1.id = 1
         acc1.name = "Provider A"
+        acc1.locked = False
         acc1.profiles.filter.return_value = [MagicMock(id=10, name="P1", max_streams=1, is_active=True)]
 
         acc2 = MagicMock()
         acc2.id = 2
         acc2.name = "Provider B"
+        acc2.locked = False
         acc2.profiles.filter.return_value = [MagicMock(id=20, name="P2", max_streams=5, is_active=True)]
 
-        mock_account_cls.objects.filter.return_value.prefetch_related.return_value = [acc1, acc2]
+        acc_custom = MagicMock()
+        acc_custom.id = 99
+        acc_custom.name = "custom"
+        acc_custom.locked = True
+        mock_account_cls.objects.filter.return_value.prefetch_related.return_value = [acc1, acc2, acc_custom]
 
         mock_redis_client = MagicMock()
         # Provider A has 1 active stream (so available = 0)
@@ -858,6 +870,63 @@ class TestStasharrPlugin(unittest.TestCase):
             self.assertEqual(data["total_available_streams"], 5)
             # Target available is strictly Provider A (0)
             self.assertEqual(data["target_available_streams"], 0)
+
+    def test_get_provider_capacity_multi_profile_formatting(self):
+        """Verify multi-profile providers format profile breakdowns and exclude locked custom accounts."""
+        mock_m3u_mod = types.ModuleType("apps.m3u.models")
+        mock_account_cls = MagicMock()
+        mock_m3u_mod.M3UAccount = mock_account_cls
+        mock_m3u_mod.M3UAccountProfile = MagicMock()
+
+        acc_inf = MagicMock()
+        acc_inf.id = 1
+        acc_inf.name = "Infinity"
+        acc_inf.locked = False
+        prof1 = MagicMock(id=10, max_streams=5, is_active=True)
+        prof1.name = "Profile 1"
+        prof2 = MagicMock(id=11, max_streams=5, is_active=True)
+        prof2.name = "Profile 2"
+        acc_inf.profiles.filter.return_value = [prof1, prof2]
+
+        acc_custom = MagicMock()
+        acc_custom.id = 99
+        acc_custom.name = "custom"
+        acc_custom.locked = True
+        prof_custom = MagicMock(id=999, max_streams=0, is_active=True)
+        prof_custom.name = "custom"
+        acc_custom.profiles.filter.return_value = [prof_custom]
+
+        mock_account_cls.objects.filter.return_value.prefetch_related.return_value = [acc_inf, acc_custom]
+
+        mock_redis_client = MagicMock()
+        # Profile 1 has 1 active stream, Profile 2 has 1 active stream (2 active total, 8 available total)
+        def fake_redis_get(key):
+            if "10" in str(key):
+                return b"1"
+            if "11" in str(key):
+                return b"1"
+            return None
+        mock_redis_client.get.side_effect = fake_redis_get
+
+        mock_core_utils = types.ModuleType("core.utils")
+        mock_redis_cls = MagicMock()
+        mock_redis_cls.get_client.return_value = mock_redis_client
+        mock_core_utils.RedisClient = mock_redis_cls
+
+        with patch.dict(sys.modules, {
+            "apps.m3u.models": mock_m3u_mod,
+            "core.utils": mock_core_utils,
+        }):
+            data = self.plugin_mod.get_provider_capacity()
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(len(data["providers"]), 1)
+            self.assertEqual(data["total_max_streams"], 10)
+            self.assertEqual(data["total_active_streams"], 2)
+            self.assertEqual(data["total_available_streams"], 8)
+            # Verify human-readable message contains accurate capacity and profile breakdown
+            self.assertIn("Provider Capacity: 8/10 streams available (2 active).", data["message"])
+            self.assertIn("Infinity: 8/10 free [Profile 1: 4/5, Profile 2: 4/5]", data["message"])
+            self.assertNotIn("custom", data["message"])
 
     def test_get_next_episode_urls(self):
         """Verify get_next_episode_urls queries upcoming episodes in sequence order."""
