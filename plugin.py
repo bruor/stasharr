@@ -20,6 +20,7 @@ DEFAULT_SETTINGS = {
     "streamcache_session_timeout": 120,
     "streamcache_base_url": "http://streamcache:8080",
     "dispatcharr_stream_url": "http://dispatcharr:9191",
+    "prefetch_count": 1,
 }
 
 try:
@@ -117,6 +118,31 @@ except ImportError:
             return self._data
 
 try:
+    from django.urls import path
+except ImportError:
+    def path(route, view, name=None):
+        class _Pattern:
+            def __init__(self, r, v, n):
+                self.pattern = r
+                self.callback = v
+                self.name = n
+        return _Pattern(route, view, name)
+
+try:
+    from django.db.models import Q
+except ImportError:
+    class Q:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def __or__(self, other):
+            return self
+
+        def __and__(self, other):
+            return self
+
+try:
     from django.db import close_old_connections
 except ImportError:
     def close_old_connections():
@@ -142,9 +168,156 @@ def _extract_req_header(req, header_name: str, meta_name: str):
     return None
 
 
+def get_provider_capacity(content_type: str = None, content_id: str = None) -> dict:
+    """
+    Computes provider connection capacity across all active M3UAccountProfiles.
+    Optionally scopes to providers capable of serving content_type/content_id.
+    """
+    now = int(time.time())
+    result = {
+        "status": "ok",
+        "timestamp": now,
+        "total_max_streams": 0,
+        "total_active_streams": 0,
+        "total_available_streams": 0,
+        "target_available_streams": 0,
+        "providers": [],
+    }
+
+    try:
+        from apps.m3u.models import M3UAccount, M3UAccountProfile
+        from core.utils import RedisClient
+        redis_client = RedisClient.get_client()
+    except Exception as e:
+        logger.warning(f"[Stasharr] Failed to import Dispatcharr models for provider capacity: {e}")
+        result["status"] = "unavailable"
+        result["error"] = str(e)
+        return result
+
+    try:
+        from apps.m3u.connection_pool import profile_connections_key
+    except ImportError:
+        def profile_connections_key(pid):
+            return f"profile_connections:{pid}"
+
+    try:
+        active_accounts = M3UAccount.objects.filter(is_active=True).prefetch_related("profiles")
+        total_max = 0
+        total_active = 0
+        total_available = 0
+        has_unlimited = False
+
+        provider_list = []
+        account_map = {}
+
+        for acc in active_accounts:
+            acc_profiles = []
+            acc_max = 0
+            acc_active = 0
+            acc_available = 0
+            acc_has_unlimited = False
+
+            profiles = acc.profiles.filter(is_active=True) if hasattr(acc.profiles, "filter") else acc.profiles
+            for prof in profiles:
+                pid = prof.id
+                p_max = prof.max_streams  # 0 means unlimited
+                p_active = 0
+                if redis_client:
+                    try:
+                        raw_cnt = redis_client.get(profile_connections_key(pid))
+                        if raw_cnt:
+                            p_active = int(raw_cnt)
+                    except Exception:
+                        pass
+
+                if p_max == 0:
+                    p_avail = 999
+                    acc_has_unlimited = True
+                    has_unlimited = True
+                else:
+                    p_avail = max(0, p_max - p_active)
+                    acc_max += p_max
+
+                acc_active += p_active
+                acc_available += p_avail
+
+                acc_profiles.append({
+                    "profile_id": pid,
+                    "name": prof.name,
+                    "max_streams": p_max,
+                    "active_streams": p_active,
+                    "available_streams": p_avail,
+                })
+
+            if acc_has_unlimited:
+                acc_max = 999
+
+            acc_entry = {
+                "account_id": acc.id,
+                "account_name": acc.name,
+                "max_streams": acc_max,
+                "active_streams": acc_active,
+                "available_streams": acc_available,
+                "profiles": acc_profiles,
+            }
+            provider_list.append(acc_entry)
+            account_map[acc.id] = acc_entry
+
+            total_active += acc_active
+            total_available += acc_available
+            if not acc_has_unlimited:
+                total_max += acc_max
+
+        if has_unlimited:
+            total_max = 999
+
+        result["total_max_streams"] = total_max
+        result["total_active_streams"] = total_active
+        result["total_available_streams"] = total_available
+        result["target_available_streams"] = total_available
+        result["providers"] = provider_list
+
+        # If content_type and content_id are supplied, resolve candidate accounts for this item
+        if content_type and content_id:
+            try:
+                from apps.proxy.vod_proxy.views import _get_content_and_relation
+                _obj, _rel, candidates = _get_content_and_relation(content_type, content_id)
+                if candidates:
+                    target_account_ids = {c.m3u_account_id for c in candidates if c.m3u_account_id}
+                    cand_avails = [
+                        account_map[aid]["available_streams"]
+                        for aid in target_account_ids
+                        if aid in account_map
+                    ]
+                    if cand_avails:
+                        result["target_available_streams"] = max(cand_avails)
+                    else:
+                        result["target_available_streams"] = 0
+            except Exception as ce:
+                logger.debug(f"[Stasharr] Could not resolve candidate accounts for {content_type}/{content_id}: {ce}")
+
+    except Exception as e:
+        logger.error(f"[Stasharr] Error computing provider capacity: {e}", exc_info=True)
+        result["status"] = "error"
+        result["error"] = str(e)
+
+    return result
+
+
+def provider_capacity_view(request):
+    """Django view returning real-time provider capacity metrics."""
+    content_type = None
+    content_id = None
+    if hasattr(request, "GET"):
+        content_type = request.GET.get("content_type")
+        content_id = request.GET.get("content_id")
+    data = get_provider_capacity(content_type=content_type, content_id=content_id)
+    return JsonResponse(data, status=200)
+
+
 class Plugin:
     name = "Stasharr"
-    version = "1.1.0"
+    version = "1.2.0"
     description = "Intercepts Xtream Codes (XC) VOD playback requests and redirects players to Streamcache using canonical Dispatcharr playback URLs."
     author = "bruor"
 
@@ -200,9 +373,25 @@ class Plugin:
             "help_text": "The canonical Dispatcharr base URL passed inside the target ?url= parameter that Streamcache uses to fetch media via /proxy/vod/... on cache misses. Setting this explicitly to match dp2strm ensures all requests use identical pathing and produce identical MD5 cache keys regardless of how a client connected.",
             "description": "The canonical Dispatcharr base URL passed inside the target ?url= parameter that Streamcache uses to fetch media via /proxy/vod/... on cache misses. Setting this explicitly to match dp2strm ensures all requests use identical pathing and produce identical MD5 cache keys regardless of how a client connected.",
         },
+        {
+            "id": "prefetch_count",
+            "type": "integer",
+            "label": "Next Episode Prefetch Count",
+            "description": "Number of upcoming sequential episodes to pass via &next_url= to Streamcache for prehydration.",
+            "help_text": "Number of upcoming sequential episodes to pass via &next_url= to Streamcache for prehydration.",
+            "default": 1,
+        },
     ]
 
     actions = [
+        {
+            "id": "provider_capacity",
+            "label": "Query Provider Capacity",
+            "description": "Report current Dispatcharr M3U provider connection capacity metrics.",
+            "button_label": "Check Capacity",
+            "button_variant": "outline",
+            "button_color": "blue",
+        },
         {
             "id": "status_check",
             "label": "Check Hook Status",
@@ -413,6 +602,12 @@ class Plugin:
 
                 delivery_mode = ACTIVE_PLUGIN.get_setting("delivery_mode", "proxy")
 
+                next_urls = []
+                if content_type == "episode":
+                    prefetch_cnt = int(ACTIVE_PLUGIN.get_setting("prefetch_count", 1) or 1)
+                    if prefetch_cnt > 0:
+                        next_urls = ACTIVE_PLUGIN.get_next_episode_urls(str(content_id), count=prefetch_cnt)
+
                 if delivery_mode == "redirect":
                     try:
                         raw_limit = getattr(user, "stream_limit", 0) if user else 0
@@ -456,7 +651,7 @@ class Plugin:
                                 )
 
                         redirect_url = ACTIVE_PLUGIN.build_streamcache_redirect_url(
-                            content_type, str(content_id), username=username
+                            content_type, str(content_id), username=username, next_urls=next_urls
                         )
                         logger.info(
                             f"[Stasharr] Intercepted XC {content_type} ({content_id}). Redirecting -> {redirect_url}"
@@ -535,7 +730,7 @@ class Plugin:
                                 )
 
                     upstream_url = ACTIVE_PLUGIN.build_streamcache_redirect_url(
-                        content_type, str(content_id), username=username
+                        content_type, str(content_id), username=username, next_urls=next_urls
                     )
                     logger.info(
                         f"[Stasharr] Intercepted XC {content_type} ({content_id}) in proxy mode -> {upstream_url}"
@@ -694,6 +889,30 @@ class Plugin:
 
             logger.info("[Stasharr] get_user_active_connections successfully wrapped.")
 
+        # Dynamically inject /plugins/stasharr/provider-capacity route into dispatcharr.urls
+        try:
+            urls_mod = sys.modules.get("dispatcharr.urls")
+            if urls_mod is None:
+                try:
+                    import dispatcharr.urls as urls_mod
+                except ImportError:
+                    pass
+            if urls_mod is not None and hasattr(urls_mod, "urlpatterns"):
+                route_name = "stasharr_provider_capacity"
+                already_installed = any(
+                    getattr(p, "name", None) == route_name
+                    or (hasattr(p, "pattern") and "plugins/stasharr/provider-capacity" in str(p.pattern))
+                    for p in urls_mod.urlpatterns
+                )
+                if not already_installed:
+                    urls_mod.urlpatterns.insert(
+                        0,
+                        path("plugins/stasharr/provider-capacity", provider_capacity_view, name=route_name),
+                    )
+                    logger.info("[Stasharr] Successfully inserted /plugins/stasharr/provider-capacity into dispatcharr.urls.")
+        except Exception as e:
+            logger.debug(f"[Stasharr] Could not inject provider-capacity route into dispatcharr.urls: {e}")
+
     def stop(self, context=None):
         """
         Called by Dispatcharr's PluginManager when the plugin is disabled, reloaded, or deleted.
@@ -717,6 +936,19 @@ class Plugin:
             if mod is not None and hasattr(mod, "_stasharr_orig_get_user_active_connections"):
                 mod.get_user_active_connections = mod._stasharr_orig_get_user_active_connections
                 delattr(mod, "_stasharr_orig_get_user_active_connections")
+
+        # Clean up injected provider-capacity route
+        try:
+            urls_mod = sys.modules.get("dispatcharr.urls")
+            if urls_mod is not None and hasattr(urls_mod, "urlpatterns"):
+                urls_mod.urlpatterns = [
+                    p for p in urls_mod.urlpatterns
+                    if getattr(p, "name", None) != "stasharr_provider_capacity"
+                    and not (hasattr(p, "pattern") and "plugins/stasharr/provider-capacity" in str(p.pattern))
+                ]
+                logger.info("[Stasharr] Removed provider-capacity route from dispatcharr.urls.")
+        except Exception:
+            pass
 
         if ACTIVE_PLUGIN is self:
             ACTIVE_PLUGIN = None
@@ -756,12 +988,64 @@ class Plugin:
             return val.lower() in ("true", "1", "yes")
         return bool(val)
 
+    def get_next_episode_urls(self, content_id: str, count: int = 1) -> list:
+        """
+        Looks up upcoming sequential episodes in the same series for prehydration.
+        content_id can be episode UUID, numeric PK, or stream_id.
+        """
+        if count <= 0:
+            return []
+        urls = []
+        try:
+            from apps.vod.models import Episode, M3UEpisodeRelation
+
+            cur_ep = Episode.objects.filter(uuid=content_id).first()
+            if not cur_ep and str(content_id).isdigit():
+                cur_ep = Episode.objects.filter(id=int(content_id)).first()
+            if not cur_ep:
+                rel = M3UEpisodeRelation.objects.filter(
+                    stream_id=str(content_id), m3u_account__is_active=True
+                ).select_related("episode").first()
+                if rel:
+                    cur_ep = rel.episode
+
+            if not cur_ep:
+                return []
+
+            dp_base = str(
+                self.get_setting("dispatcharr_stream_url", "http://dispatcharr:9191")
+                or "http://dispatcharr:9191"
+            ).strip().rstrip("/")
+
+            season_num = cur_ep.season_number or 0
+            ep_num = cur_ep.episode_number or 0
+
+            next_eps = (
+                Episode.objects.filter(series_id=cur_ep.series_id)
+                .exclude(id=cur_ep.id)
+                .filter(
+                    Q(season_number=season_num, episode_number__gt=ep_num)
+                    | Q(season_number__gt=season_num)
+                )
+                .order_by("season_number", "episode_number")[:count]
+            )
+
+            for ep in next_eps:
+                urls.append(f"{dp_base}/proxy/vod/episode/{ep.uuid}")
+        except Exception as e:
+            logger.debug(f"[Stasharr] Failed to resolve next episode URLs for {content_id}: {e}")
+        return urls
+
     def build_streamcache_redirect_url(
-        self, content_type: str, content_uuid: str, username: str = None
+        self,
+        content_type: str,
+        content_uuid: str,
+        username: str = None,
+        next_urls: list = None,
     ) -> str:
         """
         Constructs the Streamcache redirect URL:
-        http://{streamcache_base}/stream?url={encoded_dispatcharr_url}[&user={username}]
+        http://{streamcache_base}/stream?url={encoded_dispatcharr_url}[&user={username}][&next_url={encoded_next_url}...]
         matching the exact MD5 cache key format expected by dp2strm and Streamcache.
         """
         sc_base = str(
@@ -781,6 +1065,10 @@ class Plugin:
         url = f"{sc_base}/stream?url={escaped_target}"
         if username:
             url += f"&user={quote(str(username))}"
+        if next_urls:
+            for nu in next_urls:
+                if nu:
+                    url += f"&next_url={quote(str(nu), safe='')}"
         return url
 
     def run(self, action: str, params: dict = None, context: dict = None) -> dict:
@@ -789,6 +1077,11 @@ class Plugin:
         """
         if context and isinstance(context.get("settings"), dict):
             self._cached_settings.update(context["settings"])
+
+        if action == "provider_capacity":
+            content_type = (params or {}).get("content_type") if params else None
+            content_id = (params or {}).get("content_id") if params else None
+            return get_provider_capacity(content_type=content_type, content_id=content_id)
 
         if action == "status_check":
             vod_views = self._get_vod_views_module()

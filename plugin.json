@@ -1,6 +1,6 @@
 {
   "name": "Stasharr",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Intercepts Xtream Codes (XC) VOD playback requests and redirects players to Streamcache using canonical Dispatcharr playback URLs.",
   "author": "bruor",
   "fields": [
@@ -48,9 +48,25 @@
       "placeholder": "https://dispatcharr.yourdomain.ca",
       "help_text": "The canonical Dispatcharr base URL passed inside the target ?url= parameter that Streamcache uses to fetch media via /proxy/vod/... on cache misses. Setting this explicitly to match dp2strm ensures all requests use identical pathing and produce identical MD5 cache keys regardless of how a client connected.",
       "description": "The canonical Dispatcharr base URL passed inside the target ?url= parameter that Streamcache uses to fetch media via /proxy/vod/... on cache misses. Setting this explicitly to match dp2strm ensures all requests use identical pathing and produce identical MD5 cache keys regardless of how a client connected."
+    },
+    {
+      "id": "prefetch_count",
+      "type": "integer",
+      "label": "Next Episode Prefetch Count",
+      "description": "Number of upcoming sequential episodes to pass via &next_url= to Streamcache for prehydration.",
+      "help_text": "Number of upcoming sequential episodes to pass via &next_url= to Streamcache for prehydration.",
+      "default": 1
     }
   ],
   "actions": [
+    {
+      "id": "provider_capacity",
+      "label": "Query Provider Capacity",
+      "description": "Report current Dispatcharr M3U provider connection capacity metrics.",
+      "button_label": "Check Capacity",
+      "button_variant": "outline",
+      "button_color": "blue"
+    },
     {
       "id": "status_check",
       "label": "Check Hook Status",

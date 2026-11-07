@@ -717,6 +717,194 @@ class TestStasharrPlugin(unittest.TestCase):
         self.assertEqual(result["delivery_mode"], "proxy")
         self.assertIn("active and hooked", result["message"])
 
+    def test_build_streamcache_redirect_url_with_next_urls(self):
+        """Verify build_streamcache_redirect_url correctly appends &next_url= parameters."""
+        url = self.plugin.build_streamcache_redirect_url(
+            "episode",
+            "ep-uuid-1",
+            username="alice",
+            next_urls=[
+                "http://dispatcharr:9191/proxy/vod/episode/ep-uuid-2",
+                "http://dispatcharr:9191/proxy/vod/episode/ep-uuid-3",
+            ],
+        )
+        self.assertIn("url=", url)
+        self.assertIn("user=alice", url)
+        self.assertIn("&next_url=http%3A%2F%2Fdispatcharr%3A9191%2Fproxy%2Fvod%2Fepisode%2Fep-uuid-2", url)
+        self.assertIn("&next_url=http%3A%2F%2Fdispatcharr%3A9191%2Fproxy%2Fvod%2Fepisode%2Fep-uuid-3", url)
+
+    def test_get_provider_capacity_metrics(self):
+        """Verify provider capacity calculation aggregates profiles and Redis connection counts."""
+        # Mock M3U models and RedisClient
+        mock_m3u_mod = types.ModuleType("apps.m3u.models")
+        mock_account_cls = MagicMock()
+        mock_m3u_mod.M3UAccount = mock_account_cls
+        mock_m3u_mod.M3UAccountProfile = MagicMock()
+
+        acc1 = MagicMock()
+        acc1.id = 1
+        acc1.name = "Provider A"
+        acc1.is_active = True
+
+        prof1 = MagicMock()
+        prof1.id = 10
+        prof1.name = "Profile 1"
+        prof1.max_streams = 2
+        prof1.is_active = True
+
+        acc1.profiles.filter.return_value = [prof1]
+
+        acc2 = MagicMock()
+        acc2.id = 2
+        acc2.name = "Provider B (Unlimited)"
+        acc2.is_active = True
+
+        prof2 = MagicMock()
+        prof2.id = 20
+        prof2.name = "Unlimited Profile"
+        prof2.max_streams = 0  # 0 = unlimited
+        prof2.is_active = True
+
+        acc2.profiles.filter.return_value = [prof2]
+
+        mock_account_cls.objects.filter.return_value.prefetch_related.return_value = [acc1, acc2]
+
+        mock_redis_client = MagicMock()
+        # Profile 1 has 1 active stream in Redis
+        def fake_redis_get(key):
+            if "10" in str(key):
+                return b"1"
+            return None
+        mock_redis_client.get.side_effect = fake_redis_get
+
+        mock_core_utils = types.ModuleType("core.utils")
+        mock_redis_cls = MagicMock()
+        mock_redis_cls.get_client.return_value = mock_redis_client
+        mock_core_utils.RedisClient = mock_redis_cls
+
+        with patch.dict(sys.modules, {
+            "apps.m3u.models": mock_m3u_mod,
+            "core.utils": mock_core_utils,
+        }):
+            data = self.plugin_mod.get_provider_capacity()
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(len(data["providers"]), 2)
+
+            # Provider A: max=2, active=1, available=1
+            pA = next(p for p in data["providers"] if p["account_id"] == 1)
+            self.assertEqual(pA["max_streams"], 2)
+            self.assertEqual(pA["active_streams"], 1)
+            self.assertEqual(pA["available_streams"], 1)
+
+            # Provider B: unlimited (max_streams=0) -> avail=999
+            pB = next(p for p in data["providers"] if p["account_id"] == 2)
+            self.assertEqual(pB["available_streams"], 999)
+
+            # Total available includes unlimited -> 999
+            self.assertGreaterEqual(data["total_available_streams"], 999)
+
+            # Also verify via plugin.run action "provider_capacity"
+            action_res = self.plugin.run("provider_capacity", {}, {})
+            self.assertEqual(action_res["status"], "ok")
+            self.assertEqual(action_res["providers"][0]["account_id"], 1)
+
+    def test_get_provider_capacity_scoped_to_content(self):
+        """Verify target_available_streams scopes to the provider backing the requested content."""
+        mock_m3u_mod = types.ModuleType("apps.m3u.models")
+        mock_account_cls = MagicMock()
+        mock_m3u_mod.M3UAccount = mock_account_cls
+        mock_m3u_mod.M3UAccountProfile = MagicMock()
+
+        acc1 = MagicMock()
+        acc1.id = 1
+        acc1.name = "Provider A"
+        acc1.profiles.filter.return_value = [MagicMock(id=10, name="P1", max_streams=1, is_active=True)]
+
+        acc2 = MagicMock()
+        acc2.id = 2
+        acc2.name = "Provider B"
+        acc2.profiles.filter.return_value = [MagicMock(id=20, name="P2", max_streams=5, is_active=True)]
+
+        mock_account_cls.objects.filter.return_value.prefetch_related.return_value = [acc1, acc2]
+
+        mock_redis_client = MagicMock()
+        # Provider A has 1 active stream (so available = 0)
+        # Provider B has 0 active streams (so available = 5)
+        def fake_redis_get(key):
+            if "10" in str(key):
+                return b"1"
+            return b"0"
+        mock_redis_client.get.side_effect = fake_redis_get
+
+        mock_core_utils = types.ModuleType("core.utils")
+        mock_redis_cls = MagicMock()
+        mock_redis_cls.get_client.return_value = mock_redis_client
+        mock_core_utils.RedisClient = mock_redis_cls
+
+        # Mock _get_content_and_relation to indicate episode is ONLY served by Provider A (account_id=1)
+        mock_cand = MagicMock()
+        mock_cand.m3u_account_id = 1
+        fake_vod_views = types.ModuleType("apps.proxy.vod_proxy.views")
+        fake_vod_views._get_content_and_relation = MagicMock(return_value=(MagicMock(), MagicMock(), [mock_cand]))
+
+        with patch.dict(sys.modules, {
+            "apps.m3u.models": mock_m3u_mod,
+            "core.utils": mock_core_utils,
+            "apps.proxy.vod_proxy.views": fake_vod_views,
+        }):
+            data = self.plugin_mod.get_provider_capacity(content_type="episode", content_id="ep-uuid-1")
+            self.assertEqual(data["status"], "ok")
+            # Global available is Provider A (0) + Provider B (5) = 5
+            self.assertEqual(data["total_available_streams"], 5)
+            # Target available is strictly Provider A (0)
+            self.assertEqual(data["target_available_streams"], 0)
+
+    def test_get_next_episode_urls(self):
+        """Verify get_next_episode_urls queries upcoming episodes in sequence order."""
+        mock_vod_models = types.ModuleType("apps.vod.models")
+        mock_ep_cls = MagicMock()
+        mock_vod_models.Episode = mock_ep_cls
+        mock_vod_models.M3UEpisodeRelation = MagicMock()
+
+        cur_ep = MagicMock()
+        cur_ep.id = 100
+        cur_ep.uuid = "cur-ep-uuid"
+        cur_ep.series_id = 42
+        cur_ep.season_number = 1
+        cur_ep.episode_number = 1
+
+        next_ep1 = MagicMock(id=101, uuid="next-uuid-1", season_number=1, episode_number=2)
+        next_ep2 = MagicMock(id=102, uuid="next-uuid-2", season_number=1, episode_number=3)
+
+        filter_mock = MagicMock()
+        filter_mock.first.return_value = cur_ep
+        filter_mock.exclude.return_value.filter.return_value.order_by.return_value.__getitem__.return_value = [
+            next_ep1,
+            next_ep2,
+        ]
+        mock_ep_cls.objects.filter.return_value = filter_mock
+
+        with patch.dict(sys.modules, {"apps.vod.models": mock_vod_models}):
+            urls = self.plugin.get_next_episode_urls("cur-ep-uuid", count=2)
+            self.assertEqual(len(urls), 2)
+            self.assertIn("next-uuid-1", urls[0])
+            self.assertIn("next-uuid-2", urls[1])
+
+    def test_route_injection_in_dispatcharr_urls(self):
+        """Verify provider-capacity route is inserted into dispatcharr.urls and cleaned up on stop."""
+        mock_urls_mod = types.ModuleType("dispatcharr.urls")
+        mock_urls_mod.urlpatterns = []
+
+        with patch.dict(sys.modules, {"dispatcharr.urls": mock_urls_mod}):
+            self.plugin._inject_hooks()
+            route_names = [getattr(p, "name", None) for p in mock_urls_mod.urlpatterns]
+            self.assertIn("stasharr_provider_capacity", route_names)
+
+            # Test stop cleans it up
+            self.plugin.stop()
+            route_names_after = [getattr(p, "name", None) for p in mock_urls_mod.urlpatterns]
+            self.assertNotIn("stasharr_provider_capacity", route_names_after)
+
 
 if __name__ == "__main__":
     unittest.main()
