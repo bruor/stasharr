@@ -20,6 +20,7 @@ DEFAULT_SETTINGS = {
     "streamcache_session_timeout": 120,
     "streamcache_base_url": "http://streamcache:8080",
     "dispatcharr_stream_url": "http://dispatcharr:9191",
+    "prehydrate_count": 1,
     "prefetch_count": 1,
 }
 
@@ -356,7 +357,7 @@ def provider_capacity_view(request):
 
 class Plugin:
     name = "Stasharr"
-    version = "1.2.0"
+    version = "1.2.1"
     description = "Intercepts Xtream Codes (XC) VOD playback requests and redirects players to Streamcache using canonical Dispatcharr playback URLs."
     author = "bruor"
 
@@ -413,9 +414,9 @@ class Plugin:
             "description": "The canonical Dispatcharr base URL passed inside the target ?url= parameter that Streamcache uses to fetch media via /proxy/vod/... on cache misses. Setting this explicitly to match dp2strm ensures all requests use identical pathing and produce identical MD5 cache keys regardless of how a client connected.",
         },
         {
-            "id": "prefetch_count",
+            "id": "prehydrate_count",
             "type": "integer",
-            "label": "Next Episode Prefetch Count",
+            "label": "Next Episode Prehydration Count",
             "description": "Number of upcoming sequential episodes to pass via &next_url= to Streamcache for prehydration.",
             "help_text": "Number of upcoming sequential episodes to pass via &next_url= to Streamcache for prehydration.",
             "default": 1,
@@ -643,9 +644,9 @@ class Plugin:
 
                 next_urls = []
                 if content_type == "episode":
-                    prefetch_cnt = int(ACTIVE_PLUGIN.get_setting("prefetch_count", 1) or 1)
-                    if prefetch_cnt > 0:
-                        next_urls = ACTIVE_PLUGIN.get_next_episode_urls(str(content_id), count=prefetch_cnt)
+                    prehydrate_cnt = int(ACTIVE_PLUGIN.get_setting("prehydrate_count", 1) or 1)
+                    if prehydrate_cnt > 0:
+                        next_urls = ACTIVE_PLUGIN.get_next_episode_urls(str(content_id), count=prehydrate_cnt)
 
                 if delivery_mode == "redirect":
                     try:
@@ -1006,9 +1007,15 @@ class Plugin:
             val = config.settings.get(key)
             if val is not None:
                 return val
+            if key == "prehydrate_count":
+                legacy = config.settings.get("prefetch_count")
+                if legacy is not None:
+                    return legacy
 
         if key in self._cached_settings:
             return self._cached_settings[key]
+        if key == "prehydrate_count" and "prefetch_count" in self._cached_settings:
+            return self._cached_settings["prefetch_count"]
 
         return DEFAULT_SETTINGS.get(key, default)
 

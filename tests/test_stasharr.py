@@ -975,5 +975,23 @@ class TestStasharrPlugin(unittest.TestCase):
             self.assertNotIn("stasharr_provider_capacity", route_names_after)
 
 
+    def test_prehydrate_count_setting_and_legacy_fallback(self):
+        """Verify prehydrate_count setting is used and falls back to prefetch_count if needed."""
+        # 1. Default when neither set
+        self.plugin._cached_settings = {}
+        val_default = self.plugin.get_setting("prehydrate_count")
+        self.assertEqual(int(val_default or 1), 1)
+
+        # 2. Modern prehydrate_count setting
+        self.plugin._cached_settings = {"prehydrate_count": 3}
+        val_modern = self.plugin.get_setting("prehydrate_count")
+        self.assertEqual(int(val_modern or 1), 3)
+
+        # 3. Legacy prefetch_count fallback
+        self.plugin._cached_settings = {"prefetch_count": 2}
+        val_legacy = self.plugin.get_setting("prehydrate_count")
+        self.assertEqual(int(val_legacy or 1), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

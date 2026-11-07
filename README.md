@@ -63,7 +63,7 @@ Stasharr automatically renders a configuration interface in the Dispatcharr web 
 | **Streamcache Idle Lease (seconds)** | `integer` | `120` | Only used in Redirect Mode. Duration an idle VOD session remains reserved in Streamcache during buffer pauses. |
 | **Streamcache Base URL** | `string` | `http://streamcache:8080` | The publicly accessible Streamcache endpoint that XC clients will be redirected to (e.g., `https://streamcache.yourdomain.ca`). |
 | **Dispatcharr Base URL** | `string` | `http://dispatcharr:9191` | The canonical Dispatcharr base URL passed inside the target `?url=` parameter that Streamcache uses to fetch media via `/proxy/vod/...` on cache misses. Setting this explicitly to match `dp2strm` ensures all requests use identical pathing and produce identical MD5 cache keys regardless of how a client connected. |
-| **Next Episode Prefetch Count** | `integer` | `1` | Number of upcoming sequential episodes to pass via `&next_url=` to Streamcache for completion-gated prehydration. |
+| **Next Episode Prehydration Count** | `integer` | `1` | Number of upcoming sequential episodes to pass via `&next_url=` to Streamcache for completion-gated prehydration. |
 
 ---
 
