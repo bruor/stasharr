@@ -390,10 +390,12 @@ class Plugin:
         },
         {
             "id": "streamcache_session_timeout",
-            "type": "integer",
+            "type": "number",
             "label": "Streamcache Idle Lease (seconds)",
             "description": "Only used in Redirect Mode. Duration an idle VOD session remains reserved in Streamcache during buffer pauses.",
             "default": 120,
+            "min": 1,
+            "step": 1,
         },
         {
             "id": "streamcache_base_url",
@@ -415,11 +417,13 @@ class Plugin:
         },
         {
             "id": "prehydrate_count",
-            "type": "integer",
+            "type": "number",
             "label": "Next Episode Prehydration Count",
             "description": "Number of upcoming sequential episodes to pass via &next_url= to Streamcache for prehydration.",
             "help_text": "Number of upcoming sequential episodes to pass via &next_url= to Streamcache for prehydration.",
             "default": 1,
+            "min": 0,
+            "step": 1,
         },
     ]
 
