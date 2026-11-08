@@ -637,7 +637,8 @@ class Plugin:
                 delivery_mode = ACTIVE_PLUGIN.get_setting("delivery_mode", "proxy")
 
                 next_urls = []
-                if content_type == "episode":
+                req_method = getattr(request, "method", "GET") or "GET"
+                if content_type == "episode" and req_method.upper() != "HEAD":
                     prehydrate_cnt = int(ACTIVE_PLUGIN.get_setting("prehydrate_count", 1) or 1)
                     if prehydrate_cnt > 0:
                         next_urls = ACTIVE_PLUGIN.get_next_episode_urls(str(content_id), count=prehydrate_cnt)

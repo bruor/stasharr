@@ -1,6 +1,6 @@
 {
   "name": "Stasharr",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Intercepts Xtream Codes (XC) VOD playback requests and redirects players to Streamcache using canonical Dispatcharr playback URLs.",
   "author": "bruor",
   "fields": [

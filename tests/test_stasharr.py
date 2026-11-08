@@ -130,6 +130,33 @@ class TestStasharrPlugin(unittest.TestCase):
         extracted_url = unquote(location.split("url=")[1])
         self.assertEqual(extracted_url, "https://dp.domain.ca/proxy/vod/episode/ep-uuid-456")
 
+    def test_xc_series_episode_head_request_skips_prehydration(self):
+        """Verify XC episode HEAD requests do not query or append next_urls for prehydration."""
+        vod_views = sys.modules["apps.proxy.vod_proxy.views"]
+
+        req = MagicMock()
+        req.path = "/series/testuser/testpass/555.mkv"
+        req.method = "HEAD"
+        req.headers = {}
+        req.META = {}
+        req.user = None
+
+        self.plugin._cached_settings = {
+            "delivery_mode": "redirect",
+            "streamcache_base_url": "https://streamcache.domain.ca",
+            "dispatcharr_stream_url": "https://dp.domain.ca",
+            "prehydrate_count": 2,
+        }
+
+        with patch.object(self.plugin, "get_next_episode_urls", return_value=["http://dp/next1", "http://dp/next2"]) as mock_next:
+            resp = vod_views.stream_vod(req, "episode", "ep-uuid-456")
+            mock_next.assert_not_called()
+
+        self.assertEqual(resp.status_code, 302)
+        location = resp["Location"]
+        self.assertNotIn("next_url", location)
+        self.assertIn("url=", location)
+
     def test_proxy_mode_streaming_response(self):
         """Verify proxy mode in-line streaming with Range headers, status 206, and X-Accel-Buffering: no."""
         vod_views = sys.modules["apps.proxy.vod_proxy.views"]
