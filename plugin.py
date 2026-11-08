@@ -427,9 +427,9 @@ class Plugin:
             "label": "Streamcache Base URL",
             "type": "string",
             "default": "http://streamcache:8080",
-            "placeholder": "https://streamcache.yourdomain.ca",
-            "help_text": "The publicly accessible Streamcache endpoint that XC clients will be redirected to (e.g., https://streamcache.yourdomain.ca).",
-            "description": "The publicly accessible Streamcache endpoint that XC clients will be redirected to (e.g., https://streamcache.yourdomain.ca).",
+            "placeholder": "http://streamcache:8080 or https://streamcache.yourdomain.ca",
+            "help_text": "In Proxy mode (Default), Dispatcharr connects directly to Streamcache from inside the container network to stream media to clients; use an internal container address (e.g., http://streamcache:8080). In Redirect mode, Dispatcharr sends an HTTP 302 redirecting the player's device directly to Streamcache; this must be a client-accessible URL (e.g., https://streamcache.yourdomain.ca) that Dispatcharr can also reach for session queries.",
+            "description": "In Proxy mode (Default), the internal endpoint Dispatcharr contacts to proxy media (e.g., http://streamcache:8080). In Redirect mode, the client-facing endpoint players are redirected to (e.g., https://streamcache.yourdomain.ca).",
         },
         {
             "id": "dispatcharr_stream_url",
