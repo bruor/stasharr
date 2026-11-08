@@ -288,23 +288,41 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
         if has_unlimited:
             total_max = 999
 
-        # Count active live and timeshift client connections in Dispatcharr
+        # Count active live and timeshift client connections and upstream streams in Dispatcharr
         live_clients = 0
+        live_channels = set()
+        vod_streams = 0
         if redis_client:
             try:
                 if hasattr(redis_client, "scan_iter"):
                     for pattern in ("live:channel:*:clients:*", "timeshift:channel:*:clients:*"):
-                        for _ in redis_client.scan_iter(match=pattern, count=1000):
+                        for k in redis_client.scan_iter(match=pattern, count=1000):
                             live_clients += 1
+                            k_str = k.decode("utf-8", errors="replace") if isinstance(k, bytes) else str(k)
+                            marker_idx = k_str.find(":clients:")
+                            if marker_idx != -1:
+                                live_channels.add(k_str[:marker_idx])
+                    for _ in redis_client.scan_iter(match="vod_persistent_connection:*", count=1000):
+                        vod_streams += 1
                 elif hasattr(redis_client, "keys"):
                     for pattern in ("live:channel:*:clients:*", "timeshift:channel:*:clients:*"):
                         keys = redis_client.keys(pattern)
                         if keys:
                             live_clients += len(keys)
+                            for k in keys:
+                                k_str = k.decode("utf-8", errors="replace") if isinstance(k, bytes) else str(k)
+                                marker_idx = k_str.find(":clients:")
+                                if marker_idx != -1:
+                                    live_channels.add(k_str[:marker_idx])
+                    vod_keys = redis_client.keys("vod_persistent_connection:*")
+                    if vod_keys:
+                        vod_streams += len(vod_keys)
             except Exception as le:
                 logger.debug(f"[Stasharr] Error scanning live clients: {le}")
 
         result["live_clients"] = live_clients
+        result["live_streams"] = len(live_channels)
+        result["vod_streams"] = vod_streams
         result["total_max_streams"] = total_max
         result["total_active_streams"] = total_active
         result["total_available_streams"] = total_available

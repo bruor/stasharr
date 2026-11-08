@@ -810,6 +810,8 @@ class TestStasharrPlugin(unittest.TestCase):
         def fake_scan_iter(match=None, count=None):
             if "live:channel:" in str(match):
                 return iter(["live:channel:1:clients:c1", "live:channel:1:clients:c2"])
+            if "vod_persistent_connection:" in str(match):
+                return iter(["vod_persistent_connection:v1", "vod_persistent_connection:v2", "vod_persistent_connection:v3"])
             return iter([])
         mock_redis_client.scan_iter.side_effect = fake_scan_iter
 
@@ -839,6 +841,8 @@ class TestStasharrPlugin(unittest.TestCase):
             # Total available includes unlimited -> 999
             self.assertGreaterEqual(data["total_available_streams"], 999)
             self.assertEqual(data["live_clients"], 2)
+            self.assertEqual(data["live_streams"], 1)
+            self.assertEqual(data["vod_streams"], 3)
 
             # Also verify via plugin.run action "provider_capacity"
             action_res = self.plugin.run("provider_capacity", {}, {})
