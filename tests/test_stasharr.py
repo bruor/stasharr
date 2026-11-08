@@ -807,6 +807,11 @@ class TestStasharrPlugin(unittest.TestCase):
                 return b"1"
             return None
         mock_redis_client.get.side_effect = fake_redis_get
+        def fake_scan_iter(match=None, count=None):
+            if "live:channel:" in str(match):
+                return iter(["live:channel:1:clients:c1", "live:channel:1:clients:c2"])
+            return iter([])
+        mock_redis_client.scan_iter.side_effect = fake_scan_iter
 
         mock_core_utils = types.ModuleType("core.utils")
         mock_redis_cls = MagicMock()
@@ -833,6 +838,7 @@ class TestStasharrPlugin(unittest.TestCase):
 
             # Total available includes unlimited -> 999
             self.assertGreaterEqual(data["total_available_streams"], 999)
+            self.assertEqual(data["live_clients"], 2)
 
             # Also verify via plugin.run action "provider_capacity"
             action_res = self.plugin.run("provider_capacity", {}, {})

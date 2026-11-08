@@ -288,6 +288,23 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
         if has_unlimited:
             total_max = 999
 
+        # Count active live and timeshift client connections in Dispatcharr
+        live_clients = 0
+        if redis_client:
+            try:
+                if hasattr(redis_client, "scan_iter"):
+                    for pattern in ("live:channel:*:clients:*", "timeshift:channel:*:clients:*"):
+                        for _ in redis_client.scan_iter(match=pattern, count=1000):
+                            live_clients += 1
+                elif hasattr(redis_client, "keys"):
+                    for pattern in ("live:channel:*:clients:*", "timeshift:channel:*:clients:*"):
+                        keys = redis_client.keys(pattern)
+                        if keys:
+                            live_clients += len(keys)
+            except Exception as le:
+                logger.debug(f"[Stasharr] Error scanning live clients: {le}")
+
+        result["live_clients"] = live_clients
         result["total_max_streams"] = total_max
         result["total_active_streams"] = total_active
         result["total_available_streams"] = total_available
@@ -356,7 +373,7 @@ def provider_capacity_view(request):
 
 class Plugin:
     name = "Stasharr"
-    version = "1.2.1"
+    version = "1.2.3"
     description = "Intercepts Xtream Codes (XC) VOD playback requests and redirects players to Streamcache using canonical Dispatcharr playback URLs."
     author = "bruor"
 
