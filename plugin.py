@@ -292,6 +292,7 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
         live_clients = 0
         live_channels = set()
         vod_streams = 0
+        vod_clients = 0
         if redis_client:
             try:
                 if hasattr(redis_client, "scan_iter"):
@@ -302,8 +303,19 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
                             marker_idx = k_str.find(":clients:")
                             if marker_idx != -1:
                                 live_channels.add(k_str[:marker_idx])
-                    for _ in redis_client.scan_iter(match="vod_persistent_connection:*", count=1000):
-                        vod_streams += 1
+                    for k in redis_client.scan_iter(match="vod_persistent_connection:*", count=1000):
+                        vod_clients += 1
+                        m3u_prof = None
+                        if hasattr(redis_client, "hget"):
+                            try:
+                                m3u_prof = redis_client.hget(k, "m3u_profile_id")
+                            except Exception:
+                                pass
+                        if m3u_prof:
+                            if isinstance(m3u_prof, bytes):
+                                m3u_prof = m3u_prof.decode("utf-8", errors="replace")
+                            if str(m3u_prof).strip():
+                                vod_streams += 1
                 elif hasattr(redis_client, "keys"):
                     for pattern in ("live:channel:*:clients:*", "timeshift:channel:*:clients:*"):
                         keys = redis_client.keys(pattern)
@@ -316,13 +328,26 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
                                     live_channels.add(k_str[:marker_idx])
                     vod_keys = redis_client.keys("vod_persistent_connection:*")
                     if vod_keys:
-                        vod_streams += len(vod_keys)
+                        vod_clients += len(vod_keys)
+                        for k in vod_keys:
+                            m3u_prof = None
+                            if hasattr(redis_client, "hget"):
+                                try:
+                                    m3u_prof = redis_client.hget(k, "m3u_profile_id")
+                                except Exception:
+                                    pass
+                            if m3u_prof:
+                                if isinstance(m3u_prof, bytes):
+                                    m3u_prof = m3u_prof.decode("utf-8", errors="replace")
+                                if str(m3u_prof).strip():
+                                    vod_streams += 1
             except Exception as le:
-                logger.debug(f"[Stasharr] Error scanning live clients: {le}")
+                logger.debug(f"[Stasharr] Error scanning live/VOD clients: {le}")
 
         result["live_clients"] = live_clients
         result["live_streams"] = len(live_channels)
         result["vod_streams"] = vod_streams
+        result["vod_clients"] = vod_clients
         result["total_max_streams"] = total_max
         result["total_active_streams"] = total_active
         result["total_available_streams"] = total_available

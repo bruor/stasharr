@@ -815,6 +815,13 @@ class TestStasharrPlugin(unittest.TestCase):
             return iter([])
         mock_redis_client.scan_iter.side_effect = fake_scan_iter
 
+        # v1 and v2 are proxied client sessions (no m3u_profile_id); v3 is a native provider stream
+        def fake_redis_hget(key, field):
+            if "v3" in str(key) and field == "m3u_profile_id":
+                return b"10"
+            return None
+        mock_redis_client.hget.side_effect = fake_redis_hget
+
         mock_core_utils = types.ModuleType("core.utils")
         mock_redis_cls = MagicMock()
         mock_redis_cls.get_client.return_value = mock_redis_client
@@ -842,12 +849,48 @@ class TestStasharrPlugin(unittest.TestCase):
             self.assertGreaterEqual(data["total_available_streams"], 999)
             self.assertEqual(data["live_clients"], 2)
             self.assertEqual(data["live_streams"], 1)
-            self.assertEqual(data["vod_streams"], 3)
+            self.assertEqual(data["vod_streams"], 1)
+            self.assertEqual(data["vod_clients"], 3)
 
             # Also verify via plugin.run action "provider_capacity"
             action_res = self.plugin.run("provider_capacity", {}, {})
             self.assertEqual(action_res["status"], "ok")
             self.assertEqual(action_res["providers"][0]["account_id"], 1)
+
+    def test_get_provider_capacity_proxied_vod_zero_upstream(self):
+        """Verify proxied XC client sessions without m3u_profile_id do not increment vod_streams."""
+        mock_m3u_mod = types.ModuleType("apps.m3u.models")
+        mock_account_cls = MagicMock()
+        mock_m3u_mod.M3UAccount = mock_account_cls
+        mock_m3u_mod.M3UAccountProfile = MagicMock()
+
+        acc1 = MagicMock(id=1, name="Provider A", locked=False)
+        acc1.profiles.filter.return_value = [MagicMock(id=10, name="P1", max_streams=2, is_active=True)]
+        mock_account_cls.objects.filter.return_value.prefetch_related.return_value = [acc1]
+
+        mock_redis_client = MagicMock()
+        mock_redis_client.get.return_value = None
+        # All 2 sessions are purely proxied downstream clients (no m3u_profile_id)
+        mock_redis_client.scan_iter.side_effect = lambda match=None, count=None: iter(
+            ["vod_persistent_connection:sess1", "vod_persistent_connection:sess2"]
+            if "vod_persistent_connection:" in str(match) else []
+        )
+        mock_redis_client.hget.return_value = None
+
+        mock_core_utils = types.ModuleType("core.utils")
+        mock_redis_cls = MagicMock()
+        mock_redis_cls.get_client.return_value = mock_redis_client
+        mock_core_utils.RedisClient = mock_redis_cls
+
+        with patch.dict(sys.modules, {
+            "apps.m3u.models": mock_m3u_mod,
+            "core.utils": mock_core_utils,
+        }):
+            data = self.plugin_mod.get_provider_capacity()
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(data["vod_streams"], 0)
+            self.assertEqual(data["vod_clients"], 2)
+            self.assertEqual(data["total_active_streams"], 0)
 
     def test_get_provider_capacity_scoped_to_content(self):
         """Verify target_available_streams scopes to the provider backing the requested content."""
