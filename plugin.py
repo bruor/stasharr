@@ -219,80 +219,13 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
         # If user ONLY has custom accounts and no external providers, fall back to raw accounts
         if not active_accounts and raw_accounts:
             active_accounts = list(raw_accounts)
-        total_max = 0
-        total_active = 0
-        total_available = 0
-        has_unlimited = False
 
-        provider_list = []
-        account_map = {}
-
-        for acc in active_accounts:
-            acc_profiles = []
-            acc_max = 0
-            acc_active = 0
-            acc_available = 0
-            acc_has_unlimited = False
-
-            profiles = acc.profiles.filter(is_active=True) if hasattr(acc.profiles, "filter") else acc.profiles
-            for prof in profiles:
-                pid = prof.id
-                p_max = prof.max_streams  # 0 means unlimited
-                p_active = 0
-                if redis_client:
-                    try:
-                        raw_cnt = redis_client.get(profile_connections_key(pid))
-                        if raw_cnt:
-                            p_active = int(raw_cnt)
-                    except Exception:
-                        pass
-
-                if p_max == 0:
-                    p_avail = 999
-                    acc_has_unlimited = True
-                    has_unlimited = True
-                else:
-                    p_avail = max(0, p_max - p_active)
-                    acc_max += p_max
-
-                acc_active += p_active
-                acc_available += p_avail
-
-                acc_profiles.append({
-                    "profile_id": pid,
-                    "name": prof.name,
-                    "max_streams": p_max,
-                    "active_streams": p_active,
-                    "available_streams": p_avail,
-                })
-
-            if acc_has_unlimited:
-                acc_max = 999
-
-            acc_entry = {
-                "account_id": acc.id,
-                "account_name": acc.name,
-                "max_streams": acc_max,
-                "active_streams": acc_active,
-                "available_streams": acc_available,
-                "profiles": acc_profiles,
-            }
-            provider_list.append(acc_entry)
-            account_map[acc.id] = acc_entry
-
-            total_active += acc_active
-            total_available += acc_available
-            if not acc_has_unlimited:
-                total_max += acc_max
-
-        if has_unlimited:
-            total_max = 999
-
-        # Count active live and timeshift client connections and upstream streams in Dispatcharr
+        # Count active live, timeshift (catch-up), and VOD client connections in Dispatcharr
         live_clients = 0
         live_channels = set()
         vod_streams = 0
         vod_clients = 0
+        profile_channel_counts = {}
         if redis_client:
             try:
                 if hasattr(redis_client, "scan_iter"):
@@ -341,8 +274,103 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
                                     m3u_prof = m3u_prof.decode("utf-8", errors="replace")
                                 if str(m3u_prof).strip():
                                     vod_streams += 1
+
+                # Attribute active timeshift (catch-up) streams to M3U profiles
+                timeshift_uncounted = {}
+                if hasattr(redis_client, "hget"):
+                    for chan in live_channels:
+                        if chan.startswith("timeshift:channel:"):
+                            try:
+                                prof_val = redis_client.hget(f"{chan}:metadata", "m3u_profile")
+                                if prof_val:
+                                    if isinstance(prof_val, bytes):
+                                        prof_val = prof_val.decode("utf-8", errors="replace")
+                                    p_id_int = int(str(prof_val).strip())
+
+                                    # Check if timeshift pool currently holds a profile connection reservation
+                                    stats_chan = chan[len("timeshift:channel:"):]
+                                    sess_id = stats_chan.split("_", 1)[1] if "_" in stats_chan else stats_chan
+                                    busy_val = redis_client.hget(f"timeshift:pool:{sess_id}", "busy")
+                                    if isinstance(busy_val, bytes):
+                                        busy_val = busy_val.decode("utf-8", errors="replace")
+                                    # If busy != "1", the profile slot was released between chunks or unreserved
+                                    if str(busy_val).strip() != "1":
+                                        timeshift_uncounted[p_id_int] = timeshift_uncounted.get(p_id_int, 0) + 1
+                            except Exception:
+                                pass
             except Exception as le:
                 logger.debug(f"[Stasharr] Error scanning live/VOD clients: {le}")
+
+        total_max = 0
+        total_active = 0
+        total_available = 0
+        has_unlimited = False
+
+        provider_list = []
+        account_map = {}
+
+        for acc in active_accounts:
+            acc_profiles = []
+            acc_max = 0
+            acc_active = 0
+            acc_available = 0
+            acc_has_unlimited = False
+
+            profiles = acc.profiles.filter(is_active=True) if hasattr(acc.profiles, "filter") else acc.profiles
+            for prof in profiles:
+                pid = prof.id
+                p_max = prof.max_streams  # 0 means unlimited
+                p_active = 0
+                if redis_client:
+                    try:
+                        raw_cnt = redis_client.get(profile_connections_key(pid))
+                        if raw_cnt:
+                            p_active = int(raw_cnt)
+                    except Exception:
+                        pass
+                # Incorporate active unreserved timeshift (catch-up) streams so provider connection totals match live streams
+                p_active += timeshift_uncounted.get(pid, 0)
+
+                if p_max == 0:
+                    p_avail = 999
+                    acc_has_unlimited = True
+                    has_unlimited = True
+                else:
+                    p_avail = max(0, p_max - p_active)
+                    acc_max += p_max
+
+                acc_active += p_active
+                acc_available += p_avail
+
+                acc_profiles.append({
+                    "profile_id": pid,
+                    "name": prof.name,
+                    "max_streams": p_max,
+                    "active_streams": p_active,
+                    "available_streams": p_avail,
+                })
+
+            if acc_has_unlimited:
+                acc_max = 999
+
+            acc_entry = {
+                "account_id": acc.id,
+                "account_name": acc.name,
+                "max_streams": acc_max,
+                "active_streams": acc_active,
+                "available_streams": acc_available,
+                "profiles": acc_profiles,
+            }
+            provider_list.append(acc_entry)
+            account_map[acc.id] = acc_entry
+
+            total_active += acc_active
+            total_available += acc_available
+            if not acc_has_unlimited:
+                total_max += acc_max
+
+        if has_unlimited:
+            total_max = 999
 
         result["live_clients"] = live_clients
         result["live_streams"] = len(live_channels)

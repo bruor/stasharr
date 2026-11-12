@@ -892,6 +892,88 @@ class TestStasharrPlugin(unittest.TestCase):
             self.assertEqual(data["vod_clients"], 2)
             self.assertEqual(data["total_active_streams"], 0)
 
+    def test_get_provider_capacity_includes_catchup_profile_connections(self):
+        """Verify active catchup streams (timeshift) are attributed to their M3U profiles."""
+        mock_m3u_mod = types.ModuleType("apps.m3u.models")
+        mock_account_cls = MagicMock()
+        mock_m3u_mod.M3UAccount = mock_account_cls
+        mock_m3u_mod.M3UAccountProfile = MagicMock()
+
+        p1 = MagicMock(id=34, name="wflx1", max_streams=5, is_active=True)
+        p2 = MagicMock(id=35, name="wflx2", max_streams=5, is_active=True)
+        acc_inf = MagicMock(id=1, name="Infinity", locked=False)
+        acc_inf.profiles.filter.return_value = [p1, p2]
+        mock_account_cls.objects.filter.return_value.prefetch_related.return_value = [acc_inf]
+
+        mock_redis_client = MagicMock()
+        # Redis has 2 live streams on wflx1, 1 live stream on wflx2
+        def fake_redis_get(k):
+            if k == "profile_connections:34":
+                return "2"
+            if k == "profile_connections:35":
+                return "1"
+            return None
+        mock_redis_client.get.side_effect = fake_redis_get
+
+        # 3 live channel clients + 1 timeshift channel client
+        def fake_scan_iter(match=None, count=None):
+            m = str(match)
+            if "live:channel:*:clients:*" in m:
+                return iter(["live:channel:10:clients:c1", "live:channel:20:clients:c2", "live:channel:30:clients:c3"])
+            if "timeshift:channel:*:clients:*" in m:
+                return iter(["timeshift:channel:50_xyz:clients:c4"])
+            return iter([])
+        mock_redis_client.scan_iter.side_effect = fake_scan_iter
+
+        # Channel 50_xyz timeshift metadata associates it with profile 35 (wflx2)
+        def fake_hget(k, field):
+            if k == "timeshift:channel:50_xyz:metadata" and field == "m3u_profile":
+                return "35"
+            return None
+        mock_redis_client.hget.side_effect = fake_hget
+
+        mock_core_utils = types.ModuleType("core.utils")
+        mock_redis_cls = MagicMock()
+        mock_redis_cls.get_client.return_value = mock_redis_client
+        mock_core_utils.RedisClient = mock_redis_cls
+
+        with patch.dict(sys.modules, {
+            "apps.m3u.models": mock_m3u_mod,
+            "core.utils": mock_core_utils,
+        }):
+            data = self.plugin_mod.get_provider_capacity()
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(data["live_clients"], 4)
+            self.assertEqual(data["live_streams"], 4)
+            # wflx1: 2 active (3 free)
+            self.assertEqual(data["providers"][0]["profiles"][0]["active_streams"], 2)
+            self.assertEqual(data["providers"][0]["profiles"][0]["available_streams"], 3)
+            # wflx2: 2 active (3 free) - catchup raised it from 1 to 2
+            self.assertEqual(data["providers"][0]["profiles"][1]["active_streams"], 2)
+            self.assertEqual(data["providers"][0]["profiles"][1]["available_streams"], 3)
+            # Infinity account: 4 active (6 free)
+            self.assertEqual(data["providers"][0]["active_streams"], 4)
+            self.assertEqual(data["providers"][0]["available_streams"], 6)
+            self.assertEqual(data["total_active_streams"], 4)
+            self.assertEqual(data["total_available_streams"], 6)
+
+            # Test when timeshift pool IS busy (holds the slot, e.g. profile_connections:35 is already 2)
+            mock_redis_client.get.side_effect = lambda k: "2" if k in ("profile_connections:34", "profile_connections:35") else None
+            def fake_hget_busy(k, field):
+                if k == "timeshift:channel:50_xyz:metadata" and field == "m3u_profile":
+                    return "35"
+                if k == "timeshift:pool:xyz" and field == "busy":
+                    return "1"  # Pool is busy, already holding profile slot
+                return None
+            mock_redis_client.hget.side_effect = fake_hget_busy
+
+            data_busy = self.plugin_mod.get_provider_capacity()
+            self.assertEqual(data_busy["status"], "ok")
+            # Should NOT double-count: wflx2 stays 2, Infinity stays 4
+            self.assertEqual(data_busy["providers"][0]["profiles"][1]["active_streams"], 2)
+            self.assertEqual(data_busy["providers"][0]["active_streams"], 4)
+            self.assertEqual(data_busy["total_active_streams"], 4)
+
     def test_get_provider_capacity_scoped_to_content(self):
         """Verify target_available_streams scopes to the provider backing the requested content."""
         mock_m3u_mod = types.ModuleType("apps.m3u.models")
