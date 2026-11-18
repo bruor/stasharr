@@ -18,6 +18,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Verify code version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python3 - <<'EOF'
+          import json, os, re
+          tag_ver = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          manifest_ver = json.load(open("plugin.json", encoding="utf-8"))["version"]
+          with open("plugin.py", encoding="utf-8") as f:
+              m = re.search(r'^\s*version\s*=\s*"([^"]+)"', f.read(), re.M)
+          py_ver = m.group(1) if m else ""
+          assert manifest_ver == tag_ver and py_ver == tag_ver, (
+              f"Version mismatch: tag={tag_ver}, plugin.json={manifest_ver}, plugin.py={py_ver}"
+          )
+          print(f"Verified version {tag_ver} across tag, plugin.json, and plugin.py")
+          EOF
+
       - name: Package Stasharr zip
         run: |
           mkdir -p build/stasharr
