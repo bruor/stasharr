@@ -283,6 +283,7 @@ class TestStasharrPlugin(unittest.TestCase):
 
             # Verify Redis cleanup
             mock_redis.delete.assert_any_call("vod_persistent_connection:test_sess_1")
+            mock_redis.delete.assert_any_call("vod_proxy:client:test_sess_1:stop")
             mock_redis.delete.assert_any_call("vod_client_stop_key:test_sess_1")
 
     def test_proxy_mode_stream_limit_rejection_429(self):
@@ -1129,10 +1130,242 @@ class TestStasharrPlugin(unittest.TestCase):
             route_names = [getattr(p, "name", None) for p in mock_urls_mod.urlpatterns]
             self.assertIn("stasharr_provider_capacity", route_names)
 
-            # Test stop cleans it up
+            # Test stop cleans it up in place without rebinding urlpatterns
+            urlpatterns_id = id(mock_urls_mod.urlpatterns)
             self.plugin.stop()
+            self.assertEqual(id(mock_urls_mod.urlpatterns), urlpatterns_id)
             route_names_after = [getattr(p, "name", None) for p in mock_urls_mod.urlpatterns]
             self.assertNotIn("stasharr_provider_capacity", route_names_after)
+
+    def test_plugin_manifest_v2_and_version_sync(self):
+        """Verify plugin.json declares manifest_version=2, required capabilities, and matches Plugin.version."""
+        import os
+
+        manifest_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin.json")
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        self.assertEqual(manifest.get("manifest_version"), 2)
+        self.assertEqual(manifest.get("version"), self.plugin.version)
+        caps = set(manifest.get("capabilities", []))
+        self.assertTrue({"outbound_network", "proxy_internals", "user_data"}.issubset(caps))
+
+    def test_proxy_mode_terminates_on_dispatcharr_vod_stop_key(self):
+        """Verify proxy mode stops streaming when Dispatcharr sets vod_proxy:client:{session_id}:stop."""
+        vod_views = sys.modules["apps.proxy.vod_proxy.views"]
+
+        req = MagicMock()
+        req.path = "/movie/alice/testpass/101.mp4"
+        req.headers = {}
+        req.GET = {}
+        req.META = {"REMOTE_ADDR": "192.168.1.50"}
+        user_mock = MagicMock(id=7, username="alice", stream_limit=0)
+        req.user = user_mock
+
+        self.plugin._cached_settings = {
+            "enabled": True,
+            "delivery_mode": "proxy",
+            "streamcache_base_url": "http://streamcache:8080",
+            "dispatcharr_stream_url": "http://dispatcharr:9191",
+        }
+
+        mock_upstream = MagicMock()
+        mock_upstream.status_code = 200
+        mock_upstream.headers = {"Content-Type": "video/mp4"}
+        mock_upstream.iter_content.return_value = [b"chunk1", b"chunk2", b"chunk3"]
+
+        mock_redis = MagicMock()
+        mock_redis.exists.side_effect = lambda k: k == "vod_proxy:client:test_sess_stop:stop"
+        mock_core_utils = types.ModuleType("core.utils")
+        mock_redis_cls = MagicMock()
+        mock_redis_cls.get_client.return_value = mock_redis
+        mock_core_utils.RedisClient = mock_redis_cls
+
+        # Advance time past the 15s refresh interval on chunk iterations
+        tick = {"t": 1000.0}
+        def fake_time():
+            tick["t"] += 20.0
+            return tick["t"]
+
+        with patch.dict(sys.modules, {"core.utils": mock_core_utils}), \
+             patch("requests.get", return_value=mock_upstream), \
+             patch("plugin.time.time", side_effect=fake_time):
+            resp = vod_views.stream_vod(req, "movie", "movie-uuid-1", session_id="test_sess_stop", user=user_mock)
+            chunks = list(resp.streaming_content)
+
+        # Loop must break before yielding chunk1 because stop key existed on first check
+        self.assertEqual(chunks, [])
+        mock_upstream.close.assert_called_once()
+        mock_redis.delete.assert_any_call("vod_persistent_connection:test_sess_stop")
+        mock_redis.delete.assert_any_call("vod_proxy:client:test_sess_stop:stop")
+
+    def test_proxy_mode_resolves_positional_session_id(self):
+        """Verify stream_vod extracts positional session_id passed by stream_xc_movie/episode."""
+        vod_views = sys.modules["apps.proxy.vod_proxy.views"]
+
+        req = MagicMock()
+        req.path = "/series/alice/testpass/202.mkv"
+        req.headers = {}
+        req.GET = {}
+        req.META = {"REMOTE_ADDR": "192.168.1.51"}
+        user_mock = MagicMock(id=8, username="alice", stream_limit=0)
+        req.user = user_mock
+
+        self.plugin._cached_settings = {
+            "enabled": True,
+            "delivery_mode": "proxy",
+            "streamcache_base_url": "http://streamcache:8080",
+            "dispatcharr_stream_url": "http://dispatcharr:9191",
+        }
+
+        mock_upstream = MagicMock()
+        mock_upstream.status_code = 200
+        mock_upstream.headers = {"Content-Type": "video/x-matroska"}
+        mock_upstream.iter_content.return_value = [b"data"]
+
+        mock_redis = MagicMock()
+        mock_core_utils = types.ModuleType("core.utils")
+        mock_redis_cls = MagicMock()
+        mock_redis_cls.get_client.return_value = mock_redis
+        mock_core_utils.RedisClient = mock_redis_cls
+
+        with patch.dict(sys.modules, {"core.utils": mock_core_utils}), \
+             patch("requests.get", return_value=mock_upstream):
+            resp = vod_views.stream_vod(req, "episode", "ep-uuid-2", "pos_sess_99", None, user_mock, check_network=False)
+            list(resp.streaming_content)
+
+        mock_redis.hset.assert_called_once()
+        self.assertEqual(mock_redis.hset.call_args[0][0], "vod_persistent_connection:pos_sess_99")
+
+    def test_get_provider_capacity_skips_idle_vod_sessions(self):
+        """Verify idle Redis hashes with active_streams=0 are skipped while active=1 Stasharr sessions count."""
+        mock_m3u_mod = types.ModuleType("apps.m3u.models")
+        mock_account_cls = MagicMock()
+        mock_m3u_mod.M3UAccount = mock_account_cls
+        mock_m3u_mod.M3UAccountProfile = MagicMock()
+
+        acc1 = MagicMock(id=1, name="Provider A", locked=False)
+        acc1.profiles.filter.return_value = [MagicMock(id=10, name="P1", max_streams=2, is_active=True)]
+        mock_account_cls.objects.filter.return_value.prefetch_related.return_value = [acc1]
+
+        mock_redis_client = MagicMock()
+        mock_redis_client.get.return_value = b"1"
+        mock_redis_client.scan_iter.side_effect = lambda match=None, count=None: iter(
+            [
+                "vod_persistent_connection:stasharr_active",
+                "vod_persistent_connection:dispatcharr_idle",
+                "vod_persistent_connection:dispatcharr_active",
+            ]
+            if "vod_persistent_connection:" in str(match) else []
+        )
+
+        hashes = {
+            "vod_persistent_connection:stasharr_active": {"active_streams": b"1"},
+            "vod_persistent_connection:dispatcharr_idle": {"active_streams": b"0", "m3u_profile_id": b"10"},
+            "vod_persistent_connection:dispatcharr_active": {"active_streams": b"1", "m3u_profile_id": b"10"},
+        }
+        mock_redis_client.hget.side_effect = lambda key, field: hashes.get(key, {}).get(field)
+
+        mock_core_utils = types.ModuleType("core.utils")
+        mock_redis_cls = MagicMock()
+        mock_redis_cls.get_client.return_value = mock_redis_client
+        mock_core_utils.RedisClient = mock_redis_cls
+
+        with patch.dict(sys.modules, {"apps.m3u.models": mock_m3u_mod, "core.utils": mock_core_utils}):
+            data = self.plugin_mod.get_provider_capacity()
+            self.assertEqual(data["vod_clients"], 2)
+            self.assertEqual(data["vod_streams"], 1)
+
+    def test_stop_unhooks_late_imported_views_modules(self):
+        """Verify stop() restores get_user_active_connections even on modules imported after _inject_hooks."""
+        proxy_utils = sys.modules["apps.proxy.utils"]
+        late_output_mod = types.ModuleType("apps.output.views")
+        late_output_mod.get_user_active_connections = proxy_utils.get_user_active_connections
+
+        with patch.dict(sys.modules, {"apps.output.views": late_output_mod}):
+            self.plugin.stop()
+            self.assertIs(late_output_mod.get_user_active_connections, self.orig_get_user_active_conns_mock)
+
+    def test_logging_tiers_and_no_password_leak(self):
+        """Verify minimal/standard/verbose log tiers, impact messages, and XC password omission."""
+        vod_views = sys.modules["apps.proxy.vod_proxy.views"]
+        proxy_utils = sys.modules["apps.proxy.utils"]
+
+        req_xc = MagicMock()
+        req_xc.path = "/movie/alice/supersecretpass99/101.mp4"
+        req_xc.method = "GET"
+        req_xc.headers = {}
+        req_xc.GET = {}
+        req_xc.user = MagicMock(id=5, username="alice", stream_limit=0)
+
+        req_internal = MagicMock()
+        req_internal.path = "/proxy/vod/movie/movie-uuid-999"
+        req_internal.method = "GET"
+        req_internal.headers = {}
+        req_internal.GET = {}
+
+        # 1. Minimal suppresses standard interception INFO logs, keeps 429 warnings
+        self.plugin._cached_settings = {
+            "enabled": True,
+            "delivery_mode": "redirect",
+            "log_level": "minimal",
+            "streamcache_base_url": "http://streamcache:8080",
+            "dispatcharr_stream_url": "http://dispatcharr:9191",
+        }
+        with self.assertLogs(self.plugin_mod.logger, level="DEBUG") as cm_min:
+            # Emit one forced warning to satisfy assertLogs when INFO is skipped
+            vod_views.stream_vod(req_xc, "movie", "movie-uuid-999")
+            req_xc.user.stream_limit = 1
+            with patch.object(proxy_utils, "get_user_active_connections", return_value=[{"id": "x"}]):
+                resp_429 = vod_views.stream_vod(req_xc, "movie", "movie-uuid-999")
+                self.assertEqual(resp_429.status_code, 429)
+        min_text = "\n".join(cm_min.output)
+        self.assertNotIn("Intercepted XC", min_text)
+        self.assertIn("exceeded stream limit", min_text)
+        self.assertNotIn("supersecretpass99", min_text)
+
+        # 2. Standard logs XC interception, suppresses verbose passthroughs at INFO
+        req_xc.user.stream_limit = 0
+        self.plugin._cached_settings["log_level"] = "standard"
+        with self.assertLogs(self.plugin_mod.logger, level="INFO") as cm_std:
+            vod_views.stream_vod(req_xc, "movie", "movie-uuid-999")
+            vod_views.stream_vod(req_internal, "movie", "movie-uuid-999")
+        std_text = "\n".join(cm_std.output)
+        self.assertIn("Intercepted XC movie (movie-uuid-999", std_text)
+        self.assertNotIn("Passthrough to Dispatcharr default stream_vod", std_text)
+        self.assertNotIn("supersecretpass99", std_text)
+
+        # 3. Verbose logs passthrough reason, HEAD skip, and get_user_active_connections merge at INFO
+        self.plugin._cached_settings["log_level"] = "verbose"
+        req_head = MagicMock()
+        req_head.path = "/series/alice/supersecretpass99/202.mkv"
+        req_head.method = "HEAD"
+        req_head.headers = {}
+        req_head.GET = {}
+        req_head.user = MagicMock(id=5, username="alice", stream_limit=0)
+
+        with self.assertLogs(self.plugin_mod.logger, level="INFO") as cm_verb:
+            vod_views.stream_vod(req_internal, "movie", "movie-uuid-999")
+            vod_views.stream_vod(req_head, "episode", "ep-uuid-2")
+            with patch.object(self.plugin, "get_streamcache_sessions", return_value=[{"key": "k1", "id": "c1"}]):
+                proxy_utils.get_user_active_connections(5)
+        verb_text = "\n".join(cm_verb.output)
+        self.assertIn("[Stasharr][verbose] Passthrough to Dispatcharr default stream_vod", verb_text)
+        self.assertIn("loop avoidance", verb_text)
+        self.assertIn("Skipped episode prehydration for episode/ep-uuid-2 (method=HEAD probe)", verb_text)
+        self.assertIn("Augmented get_user_active_connections for user=alice", verb_text)
+        self.assertNotIn("supersecretpass99", verb_text)
+
+    def test_action_uses_context_logger_when_provided(self):
+        """Verify UI actions log to context['logger'] per Dispatcharr 0.34.1 guidelines."""
+        ctx_logger = MagicMock()
+        self.plugin._cached_settings = {"enabled": True, "log_level": "standard"}
+        res = self.plugin.run("status_check", {}, {"logger": ctx_logger})
+        self.assertEqual(res["status"], "ok")
+        ctx_logger.log.assert_called_once()
+        logged_msg = ctx_logger.log.call_args[0][1]
+        self.assertIn("[Stasharr]", logged_msg)
+        self.assertIn("Action 'status_check'", logged_msg)
 
 
     def test_prehydrate_count_setting_and_legacy_fallback(self):

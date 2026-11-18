@@ -1,8 +1,14 @@
 {
+  "manifest_version": 2,
   "name": "Stasharr",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "Intercepts Xtream Codes (XC) VOD playback requests and redirects players to Streamcache using canonical Dispatcharr playback URLs.",
   "author": "bruor",
+  "capabilities": [
+    "outbound_network",
+    "proxy_internals",
+    "user_data"
+  ],
   "fields": [
     {
       "id": "enabled",
@@ -51,6 +57,19 @@
       "default": 1,
       "min": 0,
       "step": 1
+    },
+    {
+      "id": "log_level",
+      "type": "select",
+      "label": "Plugin Log Level",
+      "description": "Controls Stasharr logging verbosity in Dispatcharr logs without changing Dispatcharr's global log level.",
+      "help_text": "Minimal: errors, fallbacks, 429 rejections, stop-key kills, and startup/stop. Standard (Default): adds XC stream interceptions, next-episode prehydration, and admin actions. Verbose: logs passthrough reasons, Redis session tracking, limit-hook merges, and capacity polls at INFO level.",
+      "default": "standard",
+      "options": [
+        { "label": "Minimal (Errors, Rejections & Lifecycle)", "value": "minimal" },
+        { "label": "Standard (Default - Interceptions, Prehydration & Actions)", "value": "standard" },
+        { "label": "Verbose (Passthroughs, Redis State & Capacity Polls)", "value": "verbose" }
+      ]
     }
   ],
   "actions": [

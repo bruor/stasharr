@@ -21,7 +21,60 @@ DEFAULT_SETTINGS = {
     "dispatcharr_stream_url": "http://dispatcharr:9191",
     "prehydrate_count": 1,
     "prefetch_count": 1,
+    "log_level": "standard",
 }
+
+LOG_LEVEL_TIERS = {
+    "minimal": 0,
+    "standard": 1,
+    "verbose": 2,
+}
+
+
+def _active_log_level() -> str:
+    if ACTIVE_PLUGIN is not None:
+        try:
+            raw = ACTIVE_PLUGIN.get_setting("log_level", "standard")
+            lvl = str(raw or "standard").strip().lower()
+            if lvl in LOG_LEVEL_TIERS:
+                return lvl
+        except Exception:
+            pass
+    return "standard"
+
+
+def _stasharr_log(
+    tier: str,
+    level: int,
+    message: str,
+    *,
+    context_logger=None,
+    exc_info: bool = False,
+) -> None:
+    """
+    Emit a `[Stasharr]` log message governed by the plugin's `log_level` setting.
+
+    When `log_level` is `"verbose"`, diagnostic `"verbose"` events are emitted at
+    `INFO` with `[Stasharr][verbose]` so users can inspect them in Dispatcharr's
+    Log Viewer without raising Dispatcharr's global LOG_LEVEL to DEBUG.
+    """
+    target = context_logger or logger
+    configured = _active_log_level()
+    configured_rank = LOG_LEVEL_TIERS.get(configured, 1)
+    tier_rank = LOG_LEVEL_TIERS.get(tier, 1)
+
+    # Always emit WARNING/ERROR regardless of tier filter
+    if level < logging.WARNING:
+        if configured_rank < tier_rank:
+            if tier == "verbose" and configured == "standard":
+                target.debug(f"[Stasharr] {message}")
+            return
+
+    if tier == "verbose" and configured == "verbose" and level < logging.WARNING:
+        target.info(f"[Stasharr][verbose] {message}", exc_info=exc_info)
+        return
+
+    target.log(level, f"[Stasharr] {message}", exc_info=exc_info)
 
 try:
     from django.http import HttpResponseRedirect, StreamingHttpResponse, JsonResponse
@@ -168,6 +221,47 @@ def _extract_req_header(req, header_name: str, meta_name: str):
     return None
 
 
+def _scan_redis_keys(redis_client, pattern: str) -> list:
+    """List Redis keys matching `pattern` using scan_iter when available, falling back to keys()."""
+    if hasattr(redis_client, "scan_iter"):
+        return list(redis_client.scan_iter(match=pattern, count=1000))
+    if hasattr(redis_client, "keys"):
+        return list(redis_client.keys(pattern) or [])
+    return []
+
+
+def _is_vod_connection_active(redis_client, key) -> bool:
+    """Return True unless Redis explicitly records `active_streams <= 0` (idle settle/TTL hash)."""
+    if not hasattr(redis_client, "hget"):
+        return True
+    try:
+        raw_active = redis_client.hget(key, "active_streams")
+    except Exception:
+        return True
+    if raw_active is None or type(raw_active).__name__.startswith("MagicMock"):
+        return True
+    if isinstance(raw_active, bytes):
+        raw_active = raw_active.decode("utf-8", errors="replace")
+    try:
+        return int(str(raw_active).strip() or 0) > 0
+    except (ValueError, TypeError):
+        return False
+
+
+def _get_vod_stop_keys(session_id: str) -> tuple:
+    """Resolve Dispatcharr's canonical VOD client stop key plus legacy fallback."""
+    canonical = f"vod_proxy:client:{session_id}:stop"
+    try:
+        from apps.proxy.vod_proxy.multi_worker_connection_manager import get_vod_client_stop_key
+        resolved = get_vod_client_stop_key(session_id)
+        if isinstance(resolved, str) and resolved:
+            canonical = resolved
+    except Exception:
+        pass
+    legacy = f"vod_client_stop_key:{session_id}"
+    return (canonical, legacy) if legacy != canonical else (canonical,)
+
+
 def get_provider_capacity(content_type: str = None, content_id: str = None) -> dict:
     """
     Computes provider connection capacity across all active M3UAccountProfiles.
@@ -225,55 +319,35 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
         live_channels = set()
         vod_streams = 0
         vod_clients = 0
+        skipped_idle_vod = 0
         profile_channel_counts = {}
         if redis_client:
             try:
-                if hasattr(redis_client, "scan_iter"):
-                    for pattern in ("live:channel:*:clients:*", "timeshift:channel:*:clients:*"):
-                        for k in redis_client.scan_iter(match=pattern, count=1000):
-                            live_clients += 1
-                            k_str = k.decode("utf-8", errors="replace") if isinstance(k, bytes) else str(k)
-                            marker_idx = k_str.find(":clients:")
-                            if marker_idx != -1:
-                                live_channels.add(k_str[:marker_idx])
-                    for k in redis_client.scan_iter(match="vod_persistent_connection:*", count=1000):
-                        vod_clients += 1
-                        m3u_prof = None
-                        if hasattr(redis_client, "hget"):
-                            try:
-                                m3u_prof = redis_client.hget(k, "m3u_profile_id")
-                            except Exception:
-                                pass
-                        if m3u_prof:
-                            if isinstance(m3u_prof, bytes):
-                                m3u_prof = m3u_prof.decode("utf-8", errors="replace")
-                            if str(m3u_prof).strip():
-                                vod_streams += 1
-                elif hasattr(redis_client, "keys"):
-                    for pattern in ("live:channel:*:clients:*", "timeshift:channel:*:clients:*"):
-                        keys = redis_client.keys(pattern)
-                        if keys:
-                            live_clients += len(keys)
-                            for k in keys:
-                                k_str = k.decode("utf-8", errors="replace") if isinstance(k, bytes) else str(k)
-                                marker_idx = k_str.find(":clients:")
-                                if marker_idx != -1:
-                                    live_channels.add(k_str[:marker_idx])
-                    vod_keys = redis_client.keys("vod_persistent_connection:*")
-                    if vod_keys:
-                        vod_clients += len(vod_keys)
-                        for k in vod_keys:
-                            m3u_prof = None
-                            if hasattr(redis_client, "hget"):
-                                try:
-                                    m3u_prof = redis_client.hget(k, "m3u_profile_id")
-                                except Exception:
-                                    pass
-                            if m3u_prof:
-                                if isinstance(m3u_prof, bytes):
-                                    m3u_prof = m3u_prof.decode("utf-8", errors="replace")
-                                if str(m3u_prof).strip():
-                                    vod_streams += 1
+                for pattern in ("live:channel:*:clients:*", "timeshift:channel:*:clients:*"):
+                    for k in _scan_redis_keys(redis_client, pattern):
+                        live_clients += 1
+                        k_str = k.decode("utf-8", errors="replace") if isinstance(k, bytes) else str(k)
+                        marker_idx = k_str.find(":clients:")
+                        if marker_idx != -1:
+                            live_channels.add(k_str[:marker_idx])
+
+                skipped_idle_vod = 0
+                for k in _scan_redis_keys(redis_client, "vod_persistent_connection:*"):
+                    if not _is_vod_connection_active(redis_client, k):
+                        skipped_idle_vod += 1
+                        continue
+                    vod_clients += 1
+                    m3u_prof = None
+                    if hasattr(redis_client, "hget"):
+                        try:
+                            m3u_prof = redis_client.hget(k, "m3u_profile_id")
+                        except Exception:
+                            pass
+                    if m3u_prof:
+                        if isinstance(m3u_prof, bytes):
+                            m3u_prof = m3u_prof.decode("utf-8", errors="replace")
+                        if str(m3u_prof).strip():
+                            vod_streams += 1
 
                 # Attribute active timeshift (catch-up) streams to M3U profiles
                 timeshift_uncounted = {}
@@ -420,10 +494,22 @@ def get_provider_capacity(content_type: str = None, content_id: str = None) -> d
                     else:
                         result["target_available_streams"] = 0
             except Exception as ce:
-                logger.debug(f"[Stasharr] Could not resolve candidate accounts for {content_type}/{content_id}: {ce}")
+                _stasharr_log("verbose", logging.DEBUG, f"Could not resolve candidate accounts for {content_type}/{content_id}: {ce}")
+
+        scope_suffix = ""
+        if content_type and content_id:
+            scope_suffix = f", target={content_type}/{content_id} target_avail={result['target_available_streams']}"
+        _stasharr_log(
+            "verbose",
+            logging.INFO,
+            f"Provider capacity: avail={avail_display}/{max_display}, active={total_active}, "
+            f"live_clients={live_clients}, live_streams={len(live_channels)}, "
+            f"vod_clients={vod_clients}, vod_streams={vod_streams}, idle_vod_skipped={skipped_idle_vod}"
+            f"{scope_suffix}",
+        )
 
     except Exception as e:
-        logger.error(f"[Stasharr] Error computing provider capacity: {e}", exc_info=True)
+        _stasharr_log("minimal", logging.ERROR, f"Error computing provider capacity: {e}", exc_info=True)
         result["status"] = "error"
         result["error"] = str(e)
         result["message"] = f"Error computing provider capacity: {e}"
@@ -444,7 +530,7 @@ def provider_capacity_view(request):
 
 class Plugin:
     name = "Stasharr"
-    version = "1.2.3"
+    version = "1.2.6"
     description = "Intercepts Xtream Codes (XC) VOD playback requests and redirects players to Streamcache using canonical Dispatcharr playback URLs."
     author = "bruor"
 
@@ -502,6 +588,19 @@ class Plugin:
             "default": 1,
             "min": 0,
             "step": 1,
+        },
+        {
+            "id": "log_level",
+            "type": "select",
+            "label": "Plugin Log Level",
+            "description": "Controls Stasharr logging verbosity in Dispatcharr logs without changing Dispatcharr's global log level.",
+            "help_text": "Minimal: errors, fallbacks, 429 rejections, stop-key kills, and startup/stop. Standard (Default): adds XC stream interceptions, next-episode prehydration, and admin actions. Verbose: logs passthrough reasons, Redis session tracking, limit-hook merges, and capacity polls at INFO level.",
+            "default": "standard",
+            "options": [
+                {"label": "Minimal (Errors, Rejections & Lifecycle)", "value": "minimal"},
+                {"label": "Standard (Default - Interceptions, Prehydration & Actions)", "value": "standard"},
+                {"label": "Verbose (Passthroughs, Redis State & Capacity Polls)", "value": "verbose"},
+            ],
         },
     ]
 
@@ -674,6 +773,11 @@ class Plugin:
             def patched_stream_vod(request, content_type, content_id, *args, **kwargs):
                 # Check if active plugin instance is enabled
                 if not ACTIVE_PLUGIN or not ACTIVE_PLUGIN.is_enabled():
+                    _stasharr_log(
+                        "verbose",
+                        logging.INFO,
+                        f"Passthrough to Dispatcharr default stream_vod for {content_type}/{content_id} (reason=plugin disabled)",
+                    )
                     return orig_stream_vod(request, content_type, content_id, *args, **kwargs)
 
                 # Check if incoming request is from an XC client route (/movie/ or /series/)
@@ -682,6 +786,16 @@ class Plugin:
 
                 # Do not intercept internal Dispatcharr routes (/proxy/vod/...) or non-XC requests
                 if not is_xc_route:
+                    route_reason = (
+                        "internal /proxy/vod/ route (loop avoidance)"
+                        if req_path.startswith("/proxy/vod/")
+                        else "non-XC route"
+                    )
+                    _stasharr_log(
+                        "verbose",
+                        logging.INFO,
+                        f"Passthrough to Dispatcharr default stream_vod for {content_type}/{content_id} (reason={route_reason})",
+                    )
                     return orig_stream_vod(request, content_type, content_id, *args, **kwargs)
 
                 # Resolve user object from kwargs.get('user'), args, or request
@@ -726,10 +840,36 @@ class Plugin:
 
                 next_urls = []
                 req_method = getattr(request, "method", "GET") or "GET"
-                if content_type == "episode" and req_method.upper() != "HEAD":
-                    prehydrate_cnt = int(ACTIVE_PLUGIN.get_setting("prehydrate_count", 1) or 1)
-                    if prehydrate_cnt > 0:
-                        next_urls = ACTIVE_PLUGIN.get_next_episode_urls(str(content_id), count=prehydrate_cnt)
+                if content_type == "episode":
+                    if req_method.upper() == "HEAD":
+                        _stasharr_log(
+                            "verbose",
+                            logging.INFO,
+                            f"Skipped episode prehydration for episode/{content_id} (method=HEAD probe)",
+                        )
+                    else:
+                        prehydrate_cnt = int(ACTIVE_PLUGIN.get_setting("prehydrate_count", 1) or 1)
+                        if prehydrate_cnt <= 0:
+                            _stasharr_log(
+                                "verbose",
+                                logging.INFO,
+                                f"Skipped episode prehydration for episode/{content_id} (prehydrate_count={prehydrate_cnt})",
+                            )
+                        else:
+                            next_urls = ACTIVE_PLUGIN.get_next_episode_urls(str(content_id), count=prehydrate_cnt)
+                            if next_urls:
+                                next_ids = ", ".join(u.rsplit("/", 1)[-1] for u in next_urls)
+                                _stasharr_log(
+                                    "standard",
+                                    logging.INFO,
+                                    f"Queued {len(next_urls)} upcoming episode(s) for prehydration after episode/{content_id}: {next_ids}",
+                                )
+                            else:
+                                _stasharr_log(
+                                    "verbose",
+                                    logging.INFO,
+                                    f"No upcoming episodes found for prehydration after episode/{content_id}",
+                                )
 
                 if delivery_mode == "redirect":
                     try:
@@ -762,9 +902,10 @@ class Plugin:
                                         })
 
                             if len(active_conns) >= stream_limit:
-                                logger.warning(
-                                    f"[Stasharr] User {username} exceeded stream limit "
-                                    f"({stream_limit} allowed, {len(active_conns)} active). Returning 429."
+                                _stasharr_log(
+                                    "minimal",
+                                    logging.WARNING,
+                                    f"User {username} exceeded stream limit ({stream_limit} allowed, {len(active_conns)} active). Returning 429.",
                                 )
                                 return JsonResponse(
                                     {
@@ -772,18 +913,27 @@ class Plugin:
                                     },
                                     status=429,
                                 )
+                            _stasharr_log(
+                                "verbose",
+                                logging.INFO,
+                                f"Redirect stream-limit check passed for user={username} ({len(active_conns)}/{stream_limit} active) on {content_type}/{content_id}",
+                            )
 
                         redirect_url = ACTIVE_PLUGIN.build_streamcache_redirect_url(
                             content_type, str(content_id), username=username, next_urls=next_urls
                         )
-                        logger.info(
-                            f"[Stasharr] Intercepted XC {content_type} ({content_id}). Redirecting -> {redirect_url}"
+                        _stasharr_log(
+                            "standard",
+                            logging.INFO,
+                            f"Intercepted XC {content_type} ({content_id}, user={username or 'anonymous'}, mode=redirect, next_urls={len(next_urls)}) -> {redirect_url}",
                         )
                         close_old_connections()
                         return HttpResponseRedirect(redirect_url, status=302)
                     except Exception as e:
-                        logger.error(
-                            f"[Stasharr] Error generating Streamcache redirect: {e}. Falling back to default stream.",
+                        _stasharr_log(
+                            "minimal",
+                            logging.ERROR,
+                            f"Error generating Streamcache redirect: {e}. Falling back to default stream.",
                             exc_info=True,
                         )
                         return orig_stream_vod(request, content_type, content_id, *args, **kwargs)
@@ -801,9 +951,13 @@ class Plugin:
                         raw_sess = kwargs.get("session_id")
                         if raw_sess and not type(raw_sess).__name__.startswith("MagicMock"):
                             session_id = str(raw_sess)
-                    if not session_id and len(args) >= 4 and args[3]:
-                        raw_sess = args[3]
-                        if raw_sess and not type(raw_sess).__name__.startswith("MagicMock"):
+                    if not session_id and len(args) >= 1 and args[0]:
+                        raw_sess = args[0]
+                        if (
+                            isinstance(raw_sess, (str, int))
+                            and not isinstance(raw_sess, bool)
+                            and not type(raw_sess).__name__.startswith("MagicMock")
+                        ):
                             session_id = str(raw_sess)
                     if not session_id:
                         session_id = f"vod_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
@@ -825,8 +979,10 @@ class Plugin:
                         if check_limits_func is not None:
                             allowed = check_limits_func(user, session_id, media_id=str(content_id))
                             if not allowed:
-                                logger.warning(
-                                    f"[Stasharr] User {username} exceeded stream limit via check_user_stream_limits. Returning 429."
+                                _stasharr_log(
+                                    "minimal",
+                                    logging.WARNING,
+                                    f"User {username} exceeded stream limit via check_user_stream_limits. Returning 429.",
                                 )
                                 return JsonResponse(
                                     {
@@ -842,8 +998,10 @@ class Plugin:
                             )
                             active_conns = get_conns_func(user_id or username) if get_conns_func else []
                             if len(active_conns) >= stream_limit:
-                                logger.warning(
-                                    f"[Stasharr] User {username} exceeded stream limit ({len(active_conns)}/{stream_limit} active). Returning 429."
+                                _stasharr_log(
+                                    "minimal",
+                                    logging.WARNING,
+                                    f"User {username} exceeded stream limit ({len(active_conns)}/{stream_limit} active). Returning 429.",
                                 )
                                 return JsonResponse(
                                     {
@@ -851,13 +1009,11 @@ class Plugin:
                                     },
                                     status=429,
                                 )
-
-                    upstream_url = ACTIVE_PLUGIN.build_streamcache_redirect_url(
-                        content_type, str(content_id), username=username, next_urls=next_urls
-                    )
-                    logger.info(
-                        f"[Stasharr] Intercepted XC {content_type} ({content_id}) in proxy mode -> {upstream_url}"
-                    )
+                        _stasharr_log(
+                            "verbose",
+                            logging.INFO,
+                            f"Proxy stream-limit check passed for user={username} (limit={stream_limit}, session={session_id}) on {content_type}/{content_id}",
+                        )
 
                     forward_headers = {}
                     for hdr_name, meta_name in [
@@ -869,12 +1025,39 @@ class Plugin:
                         if val:
                             forward_headers[hdr_name] = str(val)
 
+                    upstream_url = ACTIVE_PLUGIN.build_streamcache_redirect_url(
+                        content_type, str(content_id), username=username, next_urls=next_urls
+                    )
+                    range_desc = forward_headers.get("Range", "full")
+                    _stasharr_log(
+                        "standard",
+                        logging.INFO,
+                        f"Intercepted XC {content_type} ({content_id}, user={username or 'anonymous'}, mode=proxy, session={session_id}, range={range_desc}, next_urls={len(next_urls)}) -> {upstream_url}",
+                    )
+
                     upstream_resp = requests.get(
                         upstream_url,
                         headers=forward_headers,
                         stream=True,
                         timeout=10,
                     )
+
+                    resp_status = getattr(upstream_resp, "status_code", 200)
+                    resp_headers = getattr(upstream_resp, "headers", {}) or {}
+                    resp_range = resp_headers.get("Content-Range", "")
+                    resp_len = resp_headers.get("Content-Length", "")
+                    if isinstance(resp_status, int) and resp_status >= 400:
+                        _stasharr_log(
+                            "minimal",
+                            logging.WARNING,
+                            f"Streamcache returned HTTP {resp_status} for {content_type}/{content_id} (session={session_id}, range={range_desc})",
+                        )
+                    else:
+                        _stasharr_log(
+                            "verbose",
+                            logging.INFO,
+                            f"Streamcache upstream response HTTP {resp_status} for {content_type}/{content_id} (session={session_id}, content_range={resp_range or 'none'}, content_length={resp_len or 'chunked'})",
+                        )
 
                     # Connect to Redis to register VOD session state for connection tracking
                     redis_client = None
@@ -885,7 +1068,7 @@ class Plugin:
                         pass
 
                     conn_key = f"vod_persistent_connection:{session_id}"
-                    stop_key = f"vod_client_stop_key:{session_id}"
+                    stop_keys = _get_vod_stop_keys(session_id)
                     client_ip = ""
                     if hasattr(request, "META") and request.META:
                         client_ip = request.META.get("REMOTE_ADDR", "") or request.META.get("HTTP_X_FORWARDED_FOR", "")
@@ -909,12 +1092,19 @@ class Plugin:
                                 redis_client.hmset(conn_key, conn_data)
                             if hasattr(redis_client, "expire"):
                                 redis_client.expire(conn_key, 60)
-                            logger.debug(f"[Stasharr] Registered VOD connection {conn_key} for user {username} in Redis.")
+                            _stasharr_log(
+                                "verbose",
+                                logging.INFO,
+                                f"Registered Redis VOD session {conn_key} (active_streams=1, user={username}, m3u_profile_id=none)",
+                            )
                         except Exception as e:
-                            logger.warning(f"[Stasharr] Error registering Redis VOD connection {conn_key}: {e}")
+                            _stasharr_log("minimal", logging.WARNING, f"Error registering Redis VOD connection {conn_key}: {e}")
 
                     def stream_iterator():
-                        last_refresh = time.time()
+                        stream_started = time.time()
+                        last_refresh = stream_started
+                        bytes_streamed = 0
+                        terminated_by_stop_key = False
                         try:
                             for chunk in upstream_resp.iter_content(chunk_size=65536):
                                 if not chunk:
@@ -923,13 +1113,15 @@ class Plugin:
                                 if redis_client is not None and user_id is not None and now - last_refresh > 15:
                                     last_refresh = now
                                     try:
-                                        if hasattr(redis_client, "exists") and redis_client.exists(stop_key):
-                                            logger.info(f"[Stasharr] Terminating VOD stream for {session_id} per stop key.")
+                                        if hasattr(redis_client, "exists") and any(redis_client.exists(sk) for sk in stop_keys):
+                                            terminated_by_stop_key = True
+                                            _stasharr_log("minimal", logging.INFO, f"Terminating VOD stream for {session_id} per stop key.")
                                             break
                                         if hasattr(redis_client, "expire"):
                                             redis_client.expire(conn_key, 60)
                                     except Exception:
                                         pass
+                                bytes_streamed += len(chunk)
                                 yield chunk
                         finally:
                             try:
@@ -940,9 +1132,17 @@ class Plugin:
                                 try:
                                     if hasattr(redis_client, "delete"):
                                         redis_client.delete(conn_key)
-                                        redis_client.delete(stop_key)
+                                        for sk in stop_keys:
+                                            redis_client.delete(sk)
                                 except Exception:
                                     pass
+                            _stasharr_log(
+                                "verbose",
+                                logging.INFO,
+                                f"Closed proxy stream {session_id} ({content_type}/{content_id}, user={username or 'anonymous'}, "
+                                f"bytes={bytes_streamed}, elapsed={time.time() - stream_started:.1f}s, "
+                                f"reason={'stop_key' if terminated_by_stop_key else 'eof_or_client_close'}); cleaned up Redis state",
+                            )
 
                     response = StreamingHttpResponse(
                         stream_iterator(),
@@ -997,6 +1197,13 @@ class Plugin:
                                 "connected_at": time.time(),
                                 "type": "vod",
                             })
+                        if sc_sessions:
+                            _stasharr_log(
+                                "verbose",
+                                logging.INFO,
+                                f"Augmented get_user_active_connections for user={username} (user_id={user_id}): "
+                                f"+{len(sc_sessions)} Streamcache session(s) (total={len(connections)})",
+                            )
 
                 return connections
 
@@ -1042,40 +1249,47 @@ class Plugin:
         Restores original functions and clears the active plugin reference.
         """
         global ACTIVE_PLUGIN
+        ctx_logger = context.get("logger") if isinstance(context, dict) else None
         vod_views = self._get_vod_views_module()
         if vod_views is not None and hasattr(vod_views, "_stasharr_orig_stream_vod"):
             vod_views.stream_vod = vod_views._stasharr_orig_stream_vod
             delattr(vod_views, "_stasharr_orig_stream_vod")
-            logger.info("[Stasharr] Restored original stream_vod function.")
+            _stasharr_log("minimal", logging.INFO, "Restored original stream_vod function.", context_logger=ctx_logger)
 
         proxy_utils = self._get_proxy_utils_module()
+        orig_conns = None
         if proxy_utils is not None and hasattr(proxy_utils, "_stasharr_orig_get_user_active_connections"):
-            proxy_utils.get_user_active_connections = proxy_utils._stasharr_orig_get_user_active_connections
+            orig_conns = proxy_utils._stasharr_orig_get_user_active_connections
+            proxy_utils.get_user_active_connections = orig_conns
             delattr(proxy_utils, "_stasharr_orig_get_user_active_connections")
-            logger.info("[Stasharr] Restored original get_user_active_connections function.")
+            _stasharr_log("minimal", logging.INFO, "Restored original get_user_active_connections function.", context_logger=ctx_logger)
 
         for mod_name in ("apps.output.views", "apps.timeshift.views"):
             mod = sys.modules.get(mod_name)
-            if mod is not None and hasattr(mod, "_stasharr_orig_get_user_active_connections"):
-                mod.get_user_active_connections = mod._stasharr_orig_get_user_active_connections
-                delattr(mod, "_stasharr_orig_get_user_active_connections")
+            if mod is not None:
+                if hasattr(mod, "_stasharr_orig_get_user_active_connections"):
+                    mod.get_user_active_connections = mod._stasharr_orig_get_user_active_connections
+                    delattr(mod, "_stasharr_orig_get_user_active_connections")
+                elif orig_conns is not None and getattr(getattr(mod, "get_user_active_connections", None), "_is_stasharr_patched", False):
+                    mod.get_user_active_connections = orig_conns
 
-        # Clean up injected provider-capacity route
+        # Clean up injected provider-capacity route in place so cached URLResolver lists see the removal
         try:
             urls_mod = sys.modules.get("dispatcharr.urls")
             if urls_mod is not None and hasattr(urls_mod, "urlpatterns"):
-                urls_mod.urlpatterns = [
+                urls_mod.urlpatterns[:] = [
                     p for p in urls_mod.urlpatterns
                     if getattr(p, "name", None) != "stasharr_provider_capacity"
                     and not (hasattr(p, "pattern") and "plugins/stasharr/provider-capacity" in str(p.pattern))
                 ]
-                logger.info("[Stasharr] Removed provider-capacity route from dispatcharr.urls.")
+                _stasharr_log("minimal", logging.INFO, "Removed provider-capacity route from dispatcharr.urls.", context_logger=ctx_logger)
         except Exception:
             pass
 
+        reason = context.get("reason") if isinstance(context, dict) else None
+        _stasharr_log("minimal", logging.INFO, f"Plugin stopped (reason={reason or 'manual'}).", context_logger=ctx_logger)
         if ACTIVE_PLUGIN is self:
             ACTIVE_PLUGIN = None
-        logger.info(f"[Stasharr] Plugin stopped (context={context}).")
 
     def get_setting(self, key: str, default=None):
         """
@@ -1207,10 +1421,19 @@ class Plugin:
         if context and isinstance(context.get("settings"), dict):
             self._cached_settings.update(context["settings"])
 
+        ctx_logger = context.get("logger") if isinstance(context, dict) else None
+
         if action == "provider_capacity":
             content_type = (params or {}).get("content_type") if params else None
             content_id = (params or {}).get("content_id") if params else None
-            return get_provider_capacity(content_type=content_type, content_id=content_id)
+            res = get_provider_capacity(content_type=content_type, content_id=content_id)
+            _stasharr_log(
+                "standard",
+                logging.INFO if res.get("status") == "ok" else logging.WARNING,
+                f"Action 'provider_capacity' completed (status={res.get('status')}): {res.get('message', '')}",
+                context_logger=ctx_logger,
+            )
+            return res
 
         if action == "status_check":
             vod_views = self._get_vod_views_module()
@@ -1232,17 +1455,27 @@ class Plugin:
                 "movie", "00000000-0000-0000-0000-000000000000"
             )
             delivery_mode = self.get_setting("delivery_mode", "proxy")
+            log_level = _active_log_level()
+            enabled = self.is_enabled()
+            _stasharr_log(
+                "standard",
+                logging.INFO,
+                f"Action 'status_check': enabled={enabled}, vod_hooked={is_vod_hooked}, "
+                f"connections_hooked={is_utils_hooked}, mode={delivery_mode}, log_level={log_level}",
+                context_logger=ctx_logger,
+            )
             return {
                 "status": "ok",
                 "is_hooked": is_vod_hooked,
                 "hook_installed": is_vod_hooked,
                 "connections_hooked": is_utils_hooked,
                 "delivery_mode": delivery_mode,
-                "is_enabled": self.is_enabled(),
+                "log_level": log_level,
+                "is_enabled": enabled,
                 "sample_redirect": sample_url,
                 "message": (
-                    f"Stasharr is {'active and hooked' if (self.is_enabled() and is_vod_hooked) else 'DISABLED or unhooked'} "
-                    f"in {delivery_mode} mode. Sample redirect: {sample_url}"
+                    f"Stasharr is {'active and hooked' if (enabled and is_vod_hooked) else 'DISABLED or unhooked'} "
+                    f"in {delivery_mode} mode (log_level={log_level}). Sample redirect: {sample_url}"
                 ),
             }
 
@@ -1260,17 +1493,35 @@ class Plugin:
                 # Streamcache root returns 404/400 when no route matches /, which proves HTTP reachability
                 code = e.code
             except Exception as e:
+                _stasharr_log(
+                    "minimal",
+                    logging.WARNING,
+                    f"Action 'ping_streamcache' failed for {ping_url}: {e}",
+                    context_logger=ctx_logger,
+                )
                 return {
                     "status": "error",
                     "error": f"Streamcache unreachable at {ping_url}: {e}",
                     "message": f"Streamcache unreachable at {ping_url}: {e}",
                 }
 
+            _stasharr_log(
+                "standard",
+                logging.INFO,
+                f"Action 'ping_streamcache' reached {sc_base} (HTTP {code}).",
+                context_logger=ctx_logger,
+            )
             return {
                 "status": "ok",
                 "message": f"Successfully reached Streamcache at {sc_base} (HTTP {code}).",
             }
 
+        _stasharr_log(
+            "minimal",
+            logging.WARNING,
+            f"Action '{action}' is unknown.",
+            context_logger=ctx_logger,
+        )
         return {
             "status": "error",
             "error": f"Unknown action: {action}",
